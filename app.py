@@ -50,7 +50,7 @@ with st.form("setup_form"):
     entry = st.number_input("Proposed entry price", min_value=0.0, format="%.8f")
     stop = st.number_input("Stop-loss price", min_value=0.0, format="%.8f")
     target = st.number_input("Take-profit price", min_value=0.0, format="%.8f")
-    risk_pct = st.number_input("Planned account risk (%)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
+    risk_pct = st.number_input("Planned account risk (%)", min_value=0.1, max_value=5.0, value=0.5, step=0.1)
     notes = st.text_area("Reasoning / chart notes", placeholder="Explain the sweep, displacement, structure shift, FVG/OB and invalidation.")
     submitted = st.form_submit_button("Evaluate setup")
 
@@ -80,7 +80,12 @@ if submitted:
     )
     checks_passed = sum([liquidity, displacement, structure, zone, session_ok])
     qualifies = (
-        not errors and bias_aligned and checks_passed == 5 and rr >= 2 and risk_pct <= 1.0
+        not errors
+        and bias_aligned
+        and timeframe == "5M"
+        and checks_passed == 5
+        and rr >= 2
+        and 0 < risk_pct <= 1.0
     )
 
     proposal = {
@@ -111,22 +116,26 @@ if "last_proposal" in st.session_state:
         st.error(err)
     st.write(f"**{p['symbol']} · {p['direction']} · {p['timeframe']}**")
     a, b, c = st.columns(3)
-    a.metric("Reward : Risk", f"1 : {p['rr']:.2f}")
+    a.metric("Risk : Reward", f"1 : {p['rr']:.2f}")
     b.metric("SMC checklist", f"{p['checks_passed']}/5")
     c.metric("Planned risk", f"{p['risk_pct']:.1f}%")
     if p["bias_aligned"]:
         st.success("Directional bias aligns with the proposed setup.")
     else:
         st.error("Bias mismatch or neutral bias. Do not approve this setup.")
+    if p["timeframe"] != "5M":
+        st.error("This strategy profile requires 5M execution. Select 5M before paper approval.")
+    if p["risk_pct"] > 1.0:
+        st.error("Planned risk exceeds the prototype limit of 1.0% per setup.")
     if p["qualifies"]:
         st.success("Meets the prototype's basic paper-review filters. This is not a prediction of profitability.")
     else:
-        st.warning("Does not pass all prototype filters. Review the checklist and prices.")
+        st.warning("Does not pass all prototype filters. Review the checklist and prices. Paper approval is disabled until the filters pass.")
 
     st.caption("No actual order will be sent. Buttons only record a paper decision.")
     d1, d2 = st.columns(2)
     with d1:
-        if st.button("Approve for paper tracking", type="primary", use_container_width=True):
+        if st.button("Approve for paper tracking", type="primary", use_container_width=True, disabled=not p["qualifies"]):
             item = dict(p)
             item["decision"] = "APPROVED FOR PAPER TRACKING"
             st.session_state.journal.append(item)
