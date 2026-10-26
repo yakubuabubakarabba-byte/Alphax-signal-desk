@@ -163,7 +163,7 @@ if submitted:
 
     if price_risk <= 0 or reward <= 0:
         errors.append("Stop-loss and target must define positive risk and reward.")
-    elif rr < MIN_REWARD_RISK:
+    elif rr < MIN_REWARD_RISK - 1e-9:
         errors.append("Reward-to-risk is below the required minimum of 1:2.")
 
     st.session_state.last_setup = {
