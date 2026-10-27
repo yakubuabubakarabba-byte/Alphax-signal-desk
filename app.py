@@ -9,7 +9,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 APP_VERSION = "0.3.0"
-BYBIT_URL = "https://api.bybit.com/v5/market/kline"
+BYBIT_URL = "https://api.bytick.com/v5/market/kline"
 
 st.set_page_config(
     page_title="AlphaX Signal Desk",
