@@ -1,43 +1,41 @@
-# AlphaX Signal Desk — v0.1
+# AlphaX Signal Desk v0.3
 
-A phone-friendly, signal-only SMC/price-action review prototype.
+A Streamlit-based trading analysis dashboard for crypto, Forex, and gold.
 
-## What it does
-- Lets you manually enter a proposed Forex, gold, or crypto setup.
-- Checks basic price ordering, direction vs. bias, a five-item SMC checklist,
-  planned risk percentage, and minimum 1:2 reward-to-risk.
-- Records approve/reject decisions for paper tracking.
-- Exports the in-session journal to CSV.
+## Features
 
-## What it does NOT do
-- No MT5 or Bybit connection.
-- No live market data.
-- No automated SMC detection.
-- No broker orders, exchange orders, or API credentials.
-- "Approve" means approve for paper tracking only.
+- Public Bybit Spot candle data for BTCUSDT, ETHUSDT, and SOLUSDT
+- 1H and 15M EMA trend-bias checks
+- Preliminary 5M liquidity-sweep, displacement, and structure-break checks
+- Manual trade setup validation
+- Maximum risk of 1% per setup, with 0.5% as the preferred risk setting
+- Minimum risk-to-reward ratio of 1:2
+- Session-only paper-trading journal with CSV export
+- CSV candle analysis for Forex and gold
+- Optional automatic refresh
 
-## Deploy from Android with GitHub + Streamlit Community Cloud
-1. Create a GitHub account and a new repository named `alphax-signal-desk`.
-2. Add `app.py`, `requirements.txt`, and this `README.md` to the repository.
-3. Open https://share.streamlit.io/ and connect GitHub.
-4. Create an app from your repository; select `app.py` as the main file.
-5. Open the app URL on your Android phone.
-6. Test only with manually verified chart values. Download the CSV journal before leaving the session.
+## Run locally
 
-## Strategy defaults in this prototype
-- Bias: 1H and 15M.
-- Entry timeframe: 5M.
-- Checklist: liquidity sweep, displacement, BOS/CHoCH, FVG/order block, acceptable conditions.
-- Risk guideline: 0.5% by default, with the prototype blocking values above 1%.
-- Minimum reward-to-risk: 1:2.
+Install the dependencies:
 
-These are initial filters for testing, not proof of a profitable edge. Tune them only after reviewing documented examples and backtests.
+```bash
+pip install -r requirements.txt
+```
 
-## Next safe development steps
-1. Add persistent storage and login protection.
-2. Add public Bybit OHLCV candle data for analysis only.
-3. Add chart-data import for MT5 from a CSV exported by a desktop terminal.
-4. Write explicit and testable definitions for swing points, liquidity sweeps, displacement,
-   BOS/CHoCH, FVG, and order blocks.
-5. Add paper-trade outcome tracking and backtests.
-6. Only consider demo execution after separate safety review. Live trading is out of scope.
+Start the dashboard:
+
+```bash
+streamlit run app.py
+```
+
+## Important limitations
+
+- This application does not place live trades.
+- The automated setup checks are simplified heuristics, not complete or independently validated Smart Money Concepts detection.
+- Bybit data is public Spot market data; it does not automatically provide Forex or gold prices.
+- The paper journal is held in the active app session and is not permanent storage.
+- Always verify prices, position sizing, and risk independently.
+
+## Version
+
+Development version: 0.3.0
