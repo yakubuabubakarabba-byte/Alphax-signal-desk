@@ -8,8 +8,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "0.3.0"
-BYBIT_URL = "https://api.bytick.com/v5/market/kline"
+APP_VERSION = "0.3.0"BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 
 st.set_page_config(
     page_title="AlphaX Signal Desk",
@@ -37,38 +36,68 @@ if auto_refresh:
 st.sidebar.caption("Forex and gold can be analysed using imported candle CSV files.")
 
 
+
 def fetch_candles(symbol, interval, limit=200):
+    interval_map = {
+        "60": "1h",
+        "15": "15m",
+        "5": "5m",
+    }
+
+    binance_interval = interval_map.get(interval)
+    if binance_interval is None:
+        raise ValueError(f"Unsupported candle interval: {interval}")
+
     params = {
-        "category": "spot",
         "symbol": symbol,
-        "interval": interval,
+        "interval": binance_interval,
         "limit": limit,
     }
-    response = requests.get(BYBIT_URL, params=params, timeout=15)
+
+    response = requests.get(
+        BINANCE_URL,
+        params=params,
+        timeout=15,
+    )
     response.raise_for_status()
-    payload = response.json()
+    rows = response.json()
 
-    if payload.get("retCode") != 0:
-        raise ValueError(payload.get("retMsg", "Bybit returned an error"))
-
-    rows = payload.get("result", {}).get("list", [])
-    if not rows:
-        raise ValueError("No candles returned")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(f"No candle data returned: {rows}")
 
     df = pd.DataFrame(
         rows,
         columns=[
-            "time", "open", "high", "low", "close", "volume", "turnover"
+            "open_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "close_time",
+            "quote_volume",
+            "trades",
+            "taker_buy_volume",
+            "taker_buy_quote_volume",
+            "ignore",
         ],
     )
 
     df["time"] = pd.to_datetime(
-        pd.to_numeric(df["time"]), unit="ms", utc=True
+        df["open_time"],
+        unit="ms",
+        utc=True,
     )
+
     for column in ["open", "high", "low", "close", "volume"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 
+    df = df.dropna(
+        subset=["open", "high", "low", "close", "volume"]
+    )
+
     return df.sort_values("time").reset_index(drop=True)
+True)
 
 
 def trend_bias(df):
