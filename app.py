@@ -41,11 +41,15 @@ st.sidebar.caption("Forex and gold can be analysed using imported candle CSV fil
 
 
 def fetch_candles(symbol, interval, limit=200):
+    
     interval_map = {
         "60": "1h",
         "15": "15m",
         "5": "5m",
+    }
+
     binance_interval = interval_map.get(interval)
+
     if binance_interval is None:
         raise ValueError(f"Unsupported candle interval: {interval}")
 
