@@ -8,7 +8,10 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-APP_VERSION = "0.3.0"BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
+
+APP_VERSION = "0.3.0"
+BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
+
 
 st.set_page_config(
     page_title="AlphaX Signal Desk",
