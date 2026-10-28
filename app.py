@@ -42,8 +42,6 @@ def fetch_candles(symbol, interval, limit=200):
         "60": "1h",
         "15": "15m",
         "5": "5m",
-    }
-
     binance_interval = interval_map.get(interval)
     if binance_interval is None:
         raise ValueError(f"Unsupported candle interval: {interval}")
@@ -81,8 +79,6 @@ def fetch_candles(symbol, interval, limit=200):
             "taker_buy_quote_volume",
             "ignore",
         ],
-    )
-
     df["time"] = pd.to_datetime(
         df["open_time"],
         unit="ms",
@@ -98,8 +94,6 @@ def fetch_candles(symbol, interval, limit=200):
 
     return df.sort_values("time").reset_index(drop=True)
 True)
-
-
 def trend_bias(df):
     if len(df) < 55:
         return "Insufficient data"
@@ -114,8 +108,6 @@ def trend_bias(df):
     if last < ema20 < ema50:
         return "Bearish"
     return "Neutral"
-
-
 def scan_5m(df):
     if len(df) < 30:
         return {
