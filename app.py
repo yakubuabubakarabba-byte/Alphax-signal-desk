@@ -2,26 +2,33 @@
 import time
 from datetime import datetime, timezone
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 API = "https://data-api.binance.vision/api/v3/klines"
 DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
 
-st.set_page_config(page_title="AlphaX Signal Desk", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="AlphaX Signal Desk",
+    page_icon="📊",
+    layout="wide",
+)
+
 st.title("📊 AlphaX Signal Desk")
 st.caption(
-    f"SMC Scanner v{VERSION} | Liquidity • Displacement • BOS/CHOCH • FVG • Signal Audit"
+    f"SMC Scanner v{VERSION} | Liquidity • Displacement • "
+    "BOS/CHOCH • FVG • Signal Audit"
 )
 st.info(
-    "Educational analysis and paper trading only. Signals are estimates, not financial advice. "
-    "Confirm setups independently. No live trades are placed."
+    "Educational analysis and paper trading only. Signals are estimates, "
+    "not financial advice. Confirm setups independently. No live trades "
+    "are placed."
 )
 
-
-# ============================ MARKET DATA ==================================
+# ============================ MARKET DATA ============================
 
 @st.cache_data(ttl=25, show_spinner=False)
 def fetch_candles(symbol, interval, limit=250):
@@ -56,8 +63,8 @@ def fetch_candles(symbol, interval, limit=250):
 
     now_ms = int(time.time() * 1000)
     df = df[df["close_time"] < now_ms].copy()
-
     df["time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+
     df = (
         df.dropna(subset=["time", "open", "high", "low", "close"])
         .sort_values("time")
@@ -90,8 +97,12 @@ def price(value):
 
 def add_emas(df):
     result = df.copy()
-    result["ema20"] = result["close"].ewm(span=20, adjust=False).mean()
-    result["ema50"] = result["close"].ewm(span=50, adjust=False).mean()
+    result["ema20"] = result["close"].ewm(
+        span=20, adjust=False
+    ).mean()
+    result["ema50"] = result["close"].ewm(
+        span=50, adjust=False
+    ).mean()
     return result
 
 
@@ -100,19 +111,16 @@ def get_bias(df):
 
     if latest["ema20"] > latest["ema50"] and latest["close"] > latest["ema20"]:
         return "Bullish"
-
     if latest["ema20"] < latest["ema50"] and latest["close"] < latest["ema20"]:
         return "Bearish"
-
     return "Neutral"
 
 
-# ============================ SWINGS =======================================
+# ============================ SWINGS ================================
 
 def find_swings(df, left=3, right=3):
     """Find confirmed swing highs and lows."""
-    highs = []
-    lows = []
+    highs, lows = [], []
 
     for i in range(left, len(df) - right):
         high_window = df["high"].iloc[i-left:i+right+1].tolist()
@@ -139,7 +147,7 @@ def find_swings(df, left=3, right=3):
 
 
 def is_swing_broken(df, swing, side):
-    """Check whether price has already closed through a swing."""
+    """Check whether a later candle closed through a swing."""
     later = df.iloc[swing["index"] + 1:]
 
     if later.empty:
@@ -159,16 +167,16 @@ def latest_swing(df, side):
         if not is_swing_broken(df, swing, side):
             return swing
 
-    return candidates[-1] if candidates else None
+    # Do not label an already-broken swing as an unbroken swing.
+    return None
 
 
-# ============================ STRUCTURE ====================================
+# ============================ STRUCTURE =============================
 
 def detect_structure(df):
-    """Detect a fresh close-through on the latest completed candle only."""
+    """Detect a fresh close-through on the latest completed candle."""
     latest = df.iloc[-1]
     prior = df.iloc[:-1].reset_index(drop=True)
-
     highs, lows = find_swings(prior)
 
     previous_close = float(prior["close"].iloc[-1])
@@ -209,18 +217,18 @@ def detect_structure(df):
         "label": "No fresh close-through of an unbroken swing.",
         "detail": (
             f"Checked latest completed candle at {fmt_time(latest['time'])}. "
-            "Older breaks are not counted as fresh."
+            "Older breaks are not counted as fresh. This simplified rule "
+            "checks BOS; it does not independently classify CHOCH."
         ),
     }
 
 
-# ============================ LIQUIDITY ====================================
+# ============================ LIQUIDITY =============================
 
 def detect_sweep(df):
-    """Detect a wick through a confirmed swing followed by a close back across."""
+    """Detect a wick through a confirmed swing and close back across."""
     latest = df.iloc[-1]
     prior = df.iloc[:-1].reset_index(drop=True)
-
     highs, lows = find_swings(prior)
 
     for swing in reversed(highs):
@@ -275,7 +283,7 @@ def detect_sweep(df):
     }
 
 
-# ============================ DISPLACEMENT ================================
+# ============================ DISPLACEMENT ==========================
 
 def detect_displacement(df):
     latest = df.iloc[-1]
@@ -293,7 +301,6 @@ def detect_displacement(df):
         direction = "Neutral"
 
     detected = baseline > 0 and ratio >= 1.5
-
     label = (
         f"{direction} displacement: body {ratio:.2f}× recent median."
         if detected
@@ -316,13 +323,13 @@ def detect_displacement(df):
     }
 
 
-# ============================ FAIR VALUE GAPS ==============================
+# ============================ FAIR VALUE GAPS =======================
 
 def detect_fvg(df):
     """
     Find qualified three-candle FVGs.
-    The middle candle body must be at least 1.3x the median of prior bodies.
-    Track later price interaction with the gap.
+    The middle candle body must be at least 1.3 times the median
+    of the previous 10 candle bodies.
     """
     bodies = (df["close"] - df["open"]).abs()
     start = max(2, len(df) - 120)
@@ -333,7 +340,7 @@ def detect_fvg(df):
         middle = df.iloc[i - 1]
         third = df.iloc[i]
 
-        baseline = float(bodies.iloc[max(0, i-11):i-1].median())
+        baseline = float(bodies.iloc[max(0, i - 11):i - 1].median())
         middle_body = float(bodies.iloc[i - 1])
 
         if baseline <= 0 or middle_body < 1.3 * baseline:
@@ -343,12 +350,10 @@ def detect_fvg(df):
             direction = "Bullish"
             lower = float(first["high"])
             upper = float(third["low"])
-
         elif float(third["high"]) < float(first["low"]):
             direction = "Bearish"
             lower = float(third["high"])
             upper = float(first["low"])
-
         else:
             continue
 
@@ -364,16 +369,15 @@ def detect_fvg(df):
                     status = "Filled"
                     mitigation_time = candle["time"]
                     break
-                if candle_low < upper:
+                if candle_low < upper and status == "Unfilled":
                     status = "Partially mitigated"
                     mitigation_time = candle["time"]
-
             else:
                 if candle_high >= upper:
                     status = "Filled"
                     mitigation_time = candle["time"]
                     break
-                if candle_high > lower:
+                if candle_high > lower and status == "Unfilled":
                     status = "Partially mitigated"
                     mitigation_time = candle["time"]
 
@@ -414,13 +418,14 @@ def detect_fvg(df):
     return active[0] if active else candidates[0]
 
 
-# ============================ AUDIT HELPERS ================================
+# ============================ AUDIT HELPERS =========================
 
 def recent_candles(df, count=12):
+    """Return the latest completed candles in a readable table."""
     result = df.tail(count).copy()
+
     result["Candle time (UTC)"] = result["time"].map(fmt_time)
     result["Body"] = (result["close"] - result["open"]).abs()
-
     result["Direction"] = result.apply(
         lambda row: (
             "Bullish" if row["close"] > row["open"]
@@ -430,14 +435,22 @@ def recent_candles(df, count=12):
         axis=1,
     )
 
-    return result[
-        ["Candle time (UTC)", "open", "high", "low", "close", "Body", "Direction"]
+    result = result[
+        [
+            "Candle time (UTC)", "open", "high", "low",
+            "close", "Body", "Direction",
+        ]
     ].rename(columns={
         "open": "Open",
         "high": "High",
         "low": "Low",
         "close": "Close",
     })
+
+    for col in ["Open", "High", "Low", "Close", "Body"]:
+        result[col] = result[col].map(lambda x: f"{x:,.8g}")
+
+    return result.reset_index(drop=True)
 
 
 def show_signal(title, item):
@@ -448,7 +461,64 @@ def show_signal(title, item):
         st.caption(item.get("detail", "No extra details available."))
 
 
-# ============================ SCANNER ======================================
+# ============================ CHART =================================
+
+def show_price_chart(df):
+    """Render a readable, explicitly UTC-labelled interactive chart."""
+    st.markdown("**5M close and EMA chart (UTC)**")
+
+    plot_df = df.tail(100).copy()
+    plot_df["time"] = pd.to_datetime(plot_df["time"], utc=True)
+
+    chart_data = plot_df.melt(
+        id_vars=["time"],
+        value_vars=["close", "ema20", "ema50"],
+        var_name="Series",
+        value_name="Price",
+    )
+
+    chart = (
+        alt.Chart(chart_data)
+        .mark_line()
+        .encode(
+            x=alt.X(
+                "time:T",
+                title="Time (UTC)",
+                axis=alt.Axis(
+                    format="%b %d %H:%M",
+                    labelAngle=-45,
+                    tickCount=6,
+                ),
+            ),
+            y=alt.Y(
+                "Price:Q",
+                title="Price",
+                axis=alt.Axis(format=",.2f"),
+                scale=alt.Scale(zero=False),
+            ),
+            color=alt.Color("Series:N", title="Indicator"),
+            tooltip=[
+                alt.Tooltip(
+                    "time:T",
+                    title="Time (UTC)",
+                    format="%Y-%m-%d %H:%M",
+                ),
+                alt.Tooltip("Series:N", title="Series"),
+                alt.Tooltip(
+                    "Price:Q",
+                    title="Price",
+                    format=",.2f",
+                ),
+            ],
+        )
+        .properties(height=320)
+        .interactive()
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
+# ============================ SCANNER ===============================
 
 def scan(symbol):
     df5 = add_emas(fetch_candles(symbol, "5m"))
@@ -463,7 +533,6 @@ def scan(symbol):
     sweep = detect_sweep(df5)
     displacement = detect_displacement(df5)
     fvg = detect_fvg(df5)
-
     latest = df5.iloc[-1]
 
     prior = df5.iloc[:-1].reset_index(drop=True)
@@ -492,9 +561,9 @@ def scan(symbol):
         show_signal("Displacement", displacement)
         show_signal("Qualified FVG", fvg)
 
-    st.markdown("**Latest confirmed swing levels**")
-
+    st.markdown("**Latest confirmed, unbroken swing levels**")
     swing_cols = st.columns(2)
+
     swing_cols[0].metric(
         "Swing high",
         price(swing_high["price"]) if swing_high else "Not found",
@@ -506,7 +575,6 @@ def scan(symbol):
 
     if swing_high:
         st.caption("Swing high pivot: " + fmt_time(swing_high["time"]))
-
     if swing_low:
         st.caption("Swing low pivot: " + fmt_time(swing_low["time"]))
 
@@ -526,29 +594,23 @@ def scan(symbol):
         fvg.get("detected") and fvg.get("active") and fvg.get("direction") == "Bearish",
     ]
 
+    labels = [
+        "1H and 15M alignment",
+        "Liquidity sweep",
+        "Displacement",
+        "Fresh BOS",
+        "Qualified active FVG",
+    ]
+
     bull_col, bear_col = st.columns(2)
 
     with bull_col:
         st.markdown(f"**Bullish checklist: {sum(bullish)}/5**")
-        labels = [
-            "1H and 15M alignment",
-            "Liquidity sweep",
-            "Displacement",
-            "Fresh BOS/CHOCH",
-            "Qualified active FVG",
-        ]
         for label, passed in zip(labels, bullish):
             st.write(("✅ " if passed else "⬜ ") + label)
 
     with bear_col:
         st.markdown(f"**Bearish checklist: {sum(bearish)}/5**")
-        labels = [
-            "1H and 15M alignment",
-            "Liquidity sweep",
-            "Displacement",
-            "Fresh BOS/CHOCH",
-            "Qualified active FVG",
-        ]
         for label, passed in zip(labels, bearish):
             st.write(("✅ " if passed else "⬜ ") + label)
 
@@ -562,10 +624,7 @@ def scan(symbol):
             "NO COMPLETE SETUP — at least one required condition is missing."
         )
 
-    # Datetime index gives a readable chart axis instead of raw epoch values.
-    st.markdown("**5M close and EMA chart (UTC)**")
-    chart = df5.tail(100).set_index("time")[["close", "ema20", "ema50"]]
-    st.line_chart(chart, height=260, use_container_width=True)
+    show_price_chart(df5)
 
     with st.expander("Signal audit: latest candle and recent context"):
         audit = pd.DataFrame([
@@ -590,7 +649,7 @@ def scan(symbol):
                 "Reference": displacement["detail"],
             },
             {
-                "Signal": "BOS/CHOCH",
+                "Signal": "BOS",
                 "Result": structure["label"],
                 "Reference": structure["detail"],
             },
@@ -602,11 +661,17 @@ def scan(symbol):
         ])
 
         st.markdown("**Latest-candle signal checks**")
-        st.dataframe(audit, use_container_width=True, hide_index=True)
+        st.dataframe(
+            audit,
+            use_container_width=True,
+            hide_index=True,
+        )
 
         st.markdown("**Last 12 completed 5M candles**")
+        candle_table = recent_candles(df5, 12)
+        st.caption(f"Showing {len(candle_table)} completed candles.")
         st.dataframe(
-            recent_candles(df5),
+            candle_table,
             use_container_width=True,
             hide_index=True,
         )
@@ -626,7 +691,7 @@ def scan(symbol):
                 )
 
 
-# ============================ SIDEBAR ======================================
+# ============================ SIDEBAR ===============================
 
 with st.sidebar:
     st.header("Scanner settings")
@@ -662,7 +727,7 @@ except Exception:
     st.caption("Auto-refresh helper unavailable; use Refresh market data.")
 
 
-# ============================ TABS =========================================
+# ============================ TABS ==================================
 
 tabs = st.tabs([
     "Market Scanner",
@@ -672,7 +737,7 @@ tabs = st.tabs([
 ])
 
 
-# ---------------------------- MARKET SCANNER -------------------------------
+# ---------------------------- MARKET SCANNER -------------------------
 
 with tabs[0]:
     st.subheader("Multi-timeframe SMC scanner")
@@ -705,7 +770,7 @@ with tabs[0]:
             st.error(f"{symbol}: scan failed: {exc}")
 
 
-# ---------------------------- SETUP VALIDATOR ------------------------------
+# ---------------------------- SETUP VALIDATOR ------------------------
 
 with tabs[1]:
     st.subheader("Setup Validator")
@@ -727,7 +792,7 @@ with tabs[1]:
         "1H and 15M aligned with direction?",
         "Liquidity sweep confirmed?",
         "Displacement confirmed?",
-        "Fresh BOS/CHOCH confirmed?",
+        "Fresh BOS confirmed?",
         "Qualified active FVG confirmed?",
     ]
 
@@ -738,24 +803,21 @@ with tabs[1]:
 
     if st.button("Validate setup"):
         score = sum(answer == "Yes" for answer in answers)
-
         st.write(f"**{validator_symbol} {direction}: {score}/5**")
 
         for question, answer in zip(questions, answers):
-            st.write(
-                ("✅ " if answer == "Yes" else "⬜ ") + question
-            )
+            st.write(("✅ " if answer == "Yes" else "⬜ ") + question)
 
         if score == 5:
             st.success(
-                "Checklist complete. Independently verify entry, stop-loss, "
-                "target and risk."
+                "Checklist complete. Independently verify entry, "
+                "stop-loss, target and risk."
             )
         else:
             st.warning("Setup incomplete under this checklist.")
 
 
-# ---------------------------- PAPER JOURNAL -------------------------------
+# ---------------------------- PAPER JOURNAL -------------------------
 
 with tabs[2]:
     st.subheader("Paper Journal")
@@ -784,22 +846,20 @@ with tabs[2]:
             value=0.0,
             format="%.8f",
         )
-
         stop = st.number_input(
             "Stop-loss",
             min_value=0.0,
             value=0.0,
             format="%.8f",
         )
-
         target = st.number_input(
             "Target",
             min_value=0.0,
             value=0.0,
             format="%.8f",
         )
-
         notes = st.text_area("Setup notes")
+
         submitted = st.form_submit_button("Add paper entry")
 
         if submitted:
@@ -815,7 +875,6 @@ with tabs[2]:
                 "Notes": notes,
                 "Status": "Open (paper)",
             })
-
             st.success("Paper entry added to this session.")
 
     if st.session_state.paper_journal:
@@ -841,7 +900,7 @@ with tabs[2]:
         st.info("No paper entries in this session yet.")
 
 
-# ---------------------------- CSV ANALYSIS ---------------------------------
+# ---------------------------- CSV ANALYSIS ---------------------------
 
 with tabs[3]:
     st.subheader("CSV Analysis")
@@ -876,9 +935,7 @@ with tabs[3]:
             ]
 
             if missing:
-                st.error(
-                    "Missing required columns: " + ", ".join(missing)
-                )
+                st.error("Missing required columns: " + ", ".join(missing))
             else:
                 for column in required:
                     original = column_map[column]
@@ -932,9 +989,9 @@ with tabs[3]:
             st.error(f"Could not analyse CSV: {exc}")
 
 
-# ============================ FOOTER =======================================
+# ============================ FOOTER ================================
 
 st.caption(
-    f"AlphaX Signal Desk v{VERSION} | Educational research and paper trading only. "
-    "No signal is guaranteed."
+    f"AlphaX Signal Desk v{VERSION} | Educational research and "
+    "paper trading only. No signal is guaranteed."
 )
