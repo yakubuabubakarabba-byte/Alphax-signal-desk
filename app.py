@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-VERSION = "0.4.3"
+VERSION = "0.5.0"
 API = "https://data-api.binance.vision/api/v3/klines"
 DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT"
 
@@ -19,29 +19,24 @@ st.set_page_config(
 
 st.title("📊 AlphaX Signal Desk")
 st.caption(
-    f"SMC Scanner v{VERSION} | Liquidity • Displacement • "
-    "BOS/CHOCH • FVG • Signal Audit"
+    f"SMC Scanner v{VERSION} | Liquidity • BOS • CHOCH • "
+    "Displacement • FVG • Signal Audit"
 )
 st.info(
     "Educational analysis and paper trading only. Signals are estimates, "
-    "not financial advice. Confirm setups independently. No live trades "
-    "are placed."
+    "not financial advice. No live trades are placed."
 )
 
-# ============================ MARKET DATA ============================
+
+# ======================== DATA =======================================
 
 @st.cache_data(ttl=25, show_spinner=False)
 def fetch_candles(symbol, interval, limit=250):
-    """Fetch Binance candles and exclude the currently forming candle."""
     response = requests.get(
         API,
-        params={
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "limit": limit,
-        },
+        params={"symbol": symbol.upper(), "interval": interval, "limit": limit},
         timeout=15,
-        headers={"User-Agent": f"AlphaX-Signal-Desk/{VERSION}"},
+        headers={"User-Agent": f"AlphaX/{VERSION}"},
     )
     response.raise_for_status()
 
@@ -53,18 +48,14 @@ def fetch_candles(symbol, interval, limit=250):
     df = pd.DataFrame(response.json(), columns=columns)
 
     if df.empty:
-        raise ValueError(f"No candles returned for {symbol} {interval}.")
+        raise ValueError("No candles returned.")
 
-    for col in [
-        "open", "high", "low", "close", "volume",
-        "open_time", "close_time",
-    ]:
+    for col in ["open", "high", "low", "close", "volume",
+                "open_time", "close_time"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    now_ms = int(time.time() * 1000)
-    df = df[df["close_time"] < now_ms].copy()
+    df = df[df["close_time"] < int(time.time() * 1000)].copy()
     df["time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-
     df = (
         df.dropna(subset=["time", "open", "high", "low", "close"])
         .sort_values("time")
@@ -73,13 +64,12 @@ def fetch_candles(symbol, interval, limit=250):
     )
 
     if len(df) < 60:
-        raise ValueError("Not enough completed candles returned.")
+        raise ValueError("Not enough completed candles.")
 
     return df
 
 
 def fmt_time(value):
-    """Format timestamps as readable UTC times."""
     try:
         stamp = pd.Timestamp(value)
         if stamp.tzinfo is None:
@@ -96,60 +86,47 @@ def price(value):
 
 
 def add_emas(df):
-    result = df.copy()
-    result["ema20"] = result["close"].ewm(
-        span=20, adjust=False
-    ).mean()
-    result["ema50"] = result["close"].ewm(
-        span=50, adjust=False
-    ).mean()
-    return result
+    df = df.copy()
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    return df
 
 
 def get_bias(df):
-    latest = df.iloc[-1]
-
-    if latest["ema20"] > latest["ema50"] and latest["close"] > latest["ema20"]:
+    last = df.iloc[-1]
+    if last["ema20"] > last["ema50"] and last["close"] > last["ema20"]:
         return "Bullish"
-    if latest["ema20"] < latest["ema50"] and latest["close"] < latest["ema20"]:
+    if last["ema20"] < last["ema50"] and last["close"] < last["ema20"]:
         return "Bearish"
     return "Neutral"
 
 
-# ============================ SWINGS ================================
+# ======================== SWINGS =====================================
 
 def find_swings(df, left=3, right=3):
-    """Find confirmed swing highs and lows."""
     highs, lows = [], []
 
     for i in range(left, len(df) - right):
-        high_window = df["high"].iloc[i-left:i+right+1].tolist()
-        low_window = df["low"].iloc[i-left:i+right+1].tolist()
+        hw = df["high"].iloc[i-left:i+right+1].tolist()
+        lw = df["low"].iloc[i-left:i+right+1].tolist()
+        hi = float(df["high"].iloc[i])
+        lo = float(df["low"].iloc[i])
 
-        high_value = float(df["high"].iloc[i])
-        low_value = float(df["low"].iloc[i])
-
-        if high_value == max(high_window) and high_window.count(high_value) == 1:
+        if hi == max(hw) and hw.count(hi) == 1:
             highs.append({
-                "index": i,
-                "price": high_value,
-                "time": df["time"].iloc[i],
+                "index": i, "price": hi, "time": df["time"].iloc[i]
             })
 
-        if low_value == min(low_window) and low_window.count(low_value) == 1:
+        if lo == min(lw) and lw.count(lo) == 1:
             lows.append({
-                "index": i,
-                "price": low_value,
-                "time": df["time"].iloc[i],
+                "index": i, "price": lo, "time": df["time"].iloc[i]
             })
 
     return highs, lows
 
 
 def is_swing_broken(df, swing, side):
-    """Check whether a later candle closed through a swing."""
     later = df.iloc[swing["index"] + 1:]
-
     if later.empty:
         return False
 
@@ -167,173 +144,256 @@ def latest_swing(df, side):
         if not is_swing_broken(df, swing, side):
             return swing
 
-    # Do not label an already-broken swing as an unbroken swing.
     return None
 
 
-# ============================ STRUCTURE =============================
+# ======================== STRUCTURAL TREND ===========================
+
+def infer_structural_trend(df):
+    """
+    Estimate the prior trend using the last two confirmed swing highs
+    and swing lows. This is a simplified structural-trend heuristic.
+    """
+    highs, lows = find_swings(df)
+
+    if len(highs) < 2 or len(lows) < 2:
+        return {
+            "trend": "Unknown",
+            "detail": "Not enough confirmed swing highs and lows to infer trend.",
+        }
+
+    h1, h2 = highs[-2], highs[-1]
+    l1, l2 = lows[-2], lows[-1]
+
+    higher_high = h2["price"] > h1["price"]
+    higher_low = l2["price"] > l1["price"]
+    lower_high = h2["price"] < h1["price"]
+    lower_low = l2["price"] < l1["price"]
+
+    if higher_high and higher_low:
+        trend = "Bullish"
+    elif lower_high and lower_low:
+        trend = "Bearish"
+    else:
+        trend = "Range/Transition"
+
+    detail = (
+        f"Previous swing high: {price(h1['price'])} at {fmt_time(h1['time'])}; "
+        f"latest swing high: {price(h2['price'])} at {fmt_time(h2['time'])}. "
+        f"Previous swing low: {price(l1['price'])} at {fmt_time(l1['time'])}; "
+        f"latest swing low: {price(l2['price'])} at {fmt_time(l2['time'])}."
+    )
+
+    return {"trend": trend, "detail": detail}
+
 
 def detect_structure(df):
-    """Detect a fresh close-through on the latest completed candle."""
+    """
+    Detect a fresh close-through of the nearest eligible confirmed swing.
+    Classify the break relative to the inferred prior structural trend.
+    """
     latest = df.iloc[-1]
     prior = df.iloc[:-1].reset_index(drop=True)
+
+    if len(prior) < 20:
+        return {
+            "detected": False,
+            "label": "Insufficient candle history for structure check.",
+            "detail": "More completed candles are required.",
+        }
+
+    trend_info = infer_structural_trend(prior)
+    prior_trend = trend_info["trend"]
     highs, lows = find_swings(prior)
 
     previous_close = float(prior["close"].iloc[-1])
     latest_close = float(latest["close"])
 
+    # Most recent unbroken swing high
     for swing in reversed(highs):
-        if not is_swing_broken(prior, swing, "high"):
-            if previous_close <= swing["price"] < latest_close:
-                return {
-                    "detected": True,
-                    "direction": "Bullish",
-                    "label": f"Bullish BOS: close crossed above {price(swing['price'])}.",
-                    "detail": (
-                        f"Swing high: {price(swing['price'])}; "
-                        f"pivot: {fmt_time(swing['time'])}; "
-                        f"break candle: {fmt_time(latest['time'])}."
-                    ),
-                }
-            break
+        if is_swing_broken(prior, swing, "high"):
+            continue
 
+        if previous_close <= swing["price"] and latest_close > swing["price"]:
+            if prior_trend == "Bearish":
+                label = "Bullish CHOCH"
+                explanation = (
+                    "Price broke above a confirmed swing high while the "
+                    "inferred prior trend was bearish."
+                )
+            elif prior_trend == "Bullish":
+                label = "Bullish BOS"
+                explanation = (
+                    "Price broke above a confirmed swing high in the "
+                    "inferred bullish trend."
+                )
+            else:
+                label = "Bullish structure break"
+                explanation = (
+                    "Price broke above a confirmed swing high, but prior "
+                    "trend classification was not decisive."
+                )
+
+            return {
+                "detected": True,
+                "direction": "Bullish",
+                "type": label,
+                "label": f"{label}: close crossed {price(swing['price'])}.",
+                "detail": (
+                    f"{explanation} Swing pivot: {fmt_time(swing['time'])}. "
+                    f"Break candle: {fmt_time(latest['time'])}. "
+                    f"Prior trend: {prior_trend}. {trend_info['detail']}"
+                ),
+            }
+        break
+
+    # Most recent unbroken swing low
     for swing in reversed(lows):
-        if not is_swing_broken(prior, swing, "low"):
-            if previous_close >= swing["price"] > latest_close:
-                return {
-                    "detected": True,
-                    "direction": "Bearish",
-                    "label": f"Bearish BOS: close crossed below {price(swing['price'])}.",
-                    "detail": (
-                        f"Swing low: {price(swing['price'])}; "
-                        f"pivot: {fmt_time(swing['time'])}; "
-                        f"break candle: {fmt_time(latest['time'])}."
-                    ),
-                }
-            break
+        if is_swing_broken(prior, swing, "low"):
+            continue
+
+        if previous_close >= swing["price"] and latest_close < swing["price"]:
+            if prior_trend == "Bullish":
+                label = "Bearish CHOCH"
+                explanation = (
+                    "Price broke below a confirmed swing low while the "
+                    "inferred prior trend was bullish."
+                )
+            elif prior_trend == "Bearish":
+                label = "Bearish BOS"
+                explanation = (
+                    "Price broke below a confirmed swing low in the "
+                    "inferred bearish trend."
+                )
+            else:
+                label = "Bearish structure break"
+                explanation = (
+                    "Price broke below a confirmed swing low, but prior "
+                    "trend classification was not decisive."
+                )
+
+            return {
+                "detected": True,
+                "direction": "Bearish",
+                "type": label,
+                "label": f"{label}: close crossed {price(swing['price'])}.",
+                "detail": (
+                    f"{explanation} Swing pivot: {fmt_time(swing['time'])}. "
+                    f"Break candle: {fmt_time(latest['time'])}. "
+                    f"Prior trend: {prior_trend}. {trend_info['detail']}"
+                ),
+            }
+        break
 
     return {
         "detected": False,
-        "label": "No fresh close-through of an unbroken swing.",
+        "direction": "None",
+        "type": "None",
+        "label": "No fresh BOS/CHOCH detected on the latest candle.",
         "detail": (
-            f"Checked latest completed candle at {fmt_time(latest['time'])}. "
-            "Older breaks are not counted as fresh. This simplified rule "
-            "checks BOS; it does not independently classify CHOCH."
+            f"Checked {fmt_time(latest['time'])}. A fresh close beyond an "
+            "eligible swing is required. Older breaks are not counted. "
+            f"Inferred prior trend: {prior_trend}. {trend_info['detail']}"
         ),
     }
 
 
-# ============================ LIQUIDITY =============================
+# ======================== LIQUIDITY SWEEP ============================
 
 def detect_sweep(df):
-    """Detect a wick through a confirmed swing and close back across."""
     latest = df.iloc[-1]
     prior = df.iloc[:-1].reset_index(drop=True)
     highs, lows = find_swings(prior)
 
     for swing in reversed(highs):
-        if not is_swing_broken(prior, swing, "high"):
-            if (
-                float(latest["high"]) > swing["price"]
-                and float(latest["close"]) < swing["price"]
-            ):
-                return {
-                    "detected": True,
-                    "direction": "Bearish",
-                    "label": (
-                        "Buy-side liquidity swept; close returned below "
-                        f"{price(swing['price'])}."
-                    ),
-                    "detail": (
-                        f"Swing: {price(swing['price'])}; "
-                        f"pivot: {fmt_time(swing['time'])}; "
-                        f"sweep candle: {fmt_time(latest['time'])}."
-                    ),
-                }
-            break
+        if is_swing_broken(prior, swing, "high"):
+            continue
+
+        if (
+            float(latest["high"]) > swing["price"]
+            and float(latest["close"]) < swing["price"]
+        ):
+            return {
+                "detected": True,
+                "direction": "Bearish",
+                "label": f"Buy-side sweep at {price(swing['price'])}.",
+                "detail": (
+                    f"Wick crossed above the swing and closed back below it. "
+                    f"Pivot: {fmt_time(swing['time'])}; "
+                    f"candle: {fmt_time(latest['time'])}."
+                ),
+            }
+        break
 
     for swing in reversed(lows):
-        if not is_swing_broken(prior, swing, "low"):
-            if (
-                float(latest["low"]) < swing["price"]
-                and float(latest["close"]) > swing["price"]
-            ):
-                return {
-                    "detected": True,
-                    "direction": "Bullish",
-                    "label": (
-                        "Sell-side liquidity swept; close returned above "
-                        f"{price(swing['price'])}."
-                    ),
-                    "detail": (
-                        f"Swing: {price(swing['price'])}; "
-                        f"pivot: {fmt_time(swing['time'])}; "
-                        f"sweep candle: {fmt_time(latest['time'])}."
-                    ),
-                }
-            break
+        if is_swing_broken(prior, swing, "low"):
+            continue
+
+        if (
+            float(latest["low"]) < swing["price"]
+            and float(latest["close"]) > swing["price"]
+        ):
+            return {
+                "detected": True,
+                "direction": "Bullish",
+                "label": f"Sell-side sweep at {price(swing['price'])}.",
+                "detail": (
+                    f"Wick crossed below the swing and closed back above it. "
+                    f"Pivot: {fmt_time(swing['time'])}; "
+                    f"candle: {fmt_time(latest['time'])}."
+                ),
+            }
+        break
 
     return {
         "detected": False,
+        "direction": "None",
         "label": "No confirmed sweep on the latest candle.",
         "detail": (
-            f"Checked {fmt_time(latest['time'])}. The wick must cross a "
+            f"Checked {fmt_time(latest['time'])}. A wick must cross a "
             "confirmed, unbroken swing and close back across it."
         ),
     }
 
 
-# ============================ DISPLACEMENT ==========================
+# ======================== DISPLACEMENT ===============================
 
 def detect_displacement(df):
     latest = df.iloc[-1]
     bodies = (df["close"] - df["open"]).abs()
-
     baseline = float(bodies.iloc[-11:-1].median())
     body = abs(float(latest["close"]) - float(latest["open"]))
     ratio = body / baseline if baseline > 0 else 0.0
 
-    if latest["close"] > latest["open"]:
-        direction = "Bullish"
-    elif latest["close"] < latest["open"]:
-        direction = "Bearish"
-    else:
-        direction = "Neutral"
-
+    direction = (
+        "Bullish" if latest["close"] > latest["open"]
+        else "Bearish" if latest["close"] < latest["open"]
+        else "Neutral"
+    )
     detected = baseline > 0 and ratio >= 1.5
-    label = (
-        f"{direction} displacement: body {ratio:.2f}× recent median."
-        if detected
-        else "No qualifying displacement on latest candle."
-    )
-
-    detail = (
-        f"Candle: {fmt_time(latest['time'])}; "
-        f"body: {price(body)}; "
-        f"median of previous 10 bodies: {price(baseline)}; "
-        f"ratio: {ratio:.2f}×; threshold: 1.50×."
-    )
 
     return {
         "detected": detected,
         "direction": direction,
         "ratio": ratio,
-        "label": label,
-        "detail": detail,
+        "label": (
+            f"{direction} displacement: {ratio:.2f}× median body."
+            if detected else "No qualifying displacement on latest candle."
+        ),
+        "detail": (
+            f"Candle: {fmt_time(latest['time'])}; body: {price(body)}; "
+            f"median of previous 10 bodies: {price(baseline)}; "
+            f"ratio: {ratio:.2f}×; threshold: 1.50×."
+        ),
     }
 
 
-# ============================ FAIR VALUE GAPS =======================
+# ======================== FAIR VALUE GAP ==============================
 
 def detect_fvg(df):
-    """
-    Find qualified three-candle FVGs.
-    The middle candle body must be at least 1.3 times the median
-    of the previous 10 candle bodies.
-    """
     bodies = (df["close"] - df["open"]).abs()
-    start = max(2, len(df) - 120)
     candidates = []
+    start = max(2, len(df) - 120)
 
     for i in range(len(df) - 1, start - 1, -1):
         first = df.iloc[i - 2]
@@ -348,12 +408,10 @@ def detect_fvg(df):
 
         if float(third["low"]) > float(first["high"]):
             direction = "Bullish"
-            lower = float(first["high"])
-            upper = float(third["low"])
+            lower, upper = float(first["high"]), float(third["low"])
         elif float(third["high"]) < float(first["low"]):
             direction = "Bearish"
-            lower = float(third["high"])
-            upper = float(first["low"])
+            lower, upper = float(third["high"]), float(first["low"])
         else:
             continue
 
@@ -361,45 +419,42 @@ def detect_fvg(df):
         mitigation_time = None
 
         for _, candle in df.iloc[i + 1:].iterrows():
-            candle_low = float(candle["low"])
-            candle_high = float(candle["high"])
+            lo, hi = float(candle["low"]), float(candle["high"])
 
             if direction == "Bullish":
-                if candle_low <= lower:
+                if lo <= lower:
                     status = "Filled"
                     mitigation_time = candle["time"]
                     break
-                if candle_low < upper and status == "Unfilled":
+                if lo < upper and status == "Unfilled":
                     status = "Partially mitigated"
                     mitigation_time = candle["time"]
             else:
-                if candle_high >= upper:
+                if hi >= upper:
                     status = "Filled"
                     mitigation_time = candle["time"]
                     break
-                if candle_high > lower and status == "Unfilled":
+                if hi > lower and status == "Unfilled":
                     status = "Partially mitigated"
                     mitigation_time = candle["time"]
 
         candidates.append({
             "detected": True,
+            "active": status != "Filled",
             "direction": direction,
             "lower": lower,
             "upper": upper,
             "status": status,
             "formation_time": third["time"],
             "mitigation_time": mitigation_time,
-            "active": status != "Filled",
             "label": (
-                f"{direction} zone: {price(lower)} – {price(upper)} "
-                f"| Status: {status}"
+                f"{direction} zone: {price(lower)}–{price(upper)} "
+                f"| {status}"
             ),
             "detail": (
-                f"Gap: {price(lower)}–{price(upper)}; "
-                f"formation candle: {fmt_time(third['time'])}; "
-                f"middle candle body: {price(middle_body)}; "
-                f"prior median: {price(baseline)}. "
-                "Status is calculated from later candle highs and lows."
+                f"Gap: {price(lower)}–{price(upper)}; formation: "
+                f"{fmt_time(third['time'])}; middle candle body: "
+                f"{price(middle_body)}; prior median: {price(baseline)}."
             ),
         })
 
@@ -407,73 +462,51 @@ def detect_fvg(df):
         return {
             "detected": False,
             "active": False,
+            "direction": "None",
             "label": "No qualified FVG found in recent lookback.",
-            "detail": (
-                "No three-candle gap passed the displacement-body filter "
-                "in the last 120 candles."
-            ),
+            "detail": "No recent three-candle gap passed the body-size filter.",
         }
 
-    active = [zone for zone in candidates if zone["status"] != "Filled"]
+    active = [zone for zone in candidates if zone["active"]]
     return active[0] if active else candidates[0]
 
 
-# ============================ AUDIT HELPERS =========================
+# ======================== DISPLAY HELPERS ============================
+
+def show_signal(title, item):
+    st.markdown(f"**{title}**")
+    st.write(item["label"])
+    with st.expander(f"{title} — audit details"):
+        st.caption(item.get("detail", "No extra details available."))
+
 
 def recent_candles(df, count=12):
-    """Return the latest completed candles in a readable table."""
     result = df.tail(count).copy()
-
     result["Candle time (UTC)"] = result["time"].map(fmt_time)
-    result["Body"] = (result["close"] - result["open"]).abs()
     result["Direction"] = result.apply(
-        lambda row: (
-            "Bullish" if row["close"] > row["open"]
-            else "Bearish" if row["close"] < row["open"]
-            else "Doji"
-        ),
+        lambda r: "Bullish" if r["close"] > r["open"]
+        else "Bearish" if r["close"] < r["open"] else "Doji",
         axis=1,
     )
-
     result = result[
-        [
-            "Candle time (UTC)", "open", "high", "low",
-            "close", "Body", "Direction",
-        ]
+        ["Candle time (UTC)", "open", "high", "low", "close", "Direction"]
     ].rename(columns={
-        "open": "Open",
-        "high": "High",
-        "low": "Low",
-        "close": "Close",
+        "open": "Open", "high": "High", "low": "Low", "close": "Close"
     })
 
-    for col in ["Open", "High", "Low", "Close", "Body"]:
+    for col in ["Open", "High", "Low", "Close"]:
         result[col] = result[col].map(lambda x: f"{x:,.8g}")
 
     return result.reset_index(drop=True)
 
 
-def show_signal(title, item):
-    st.markdown(f"**{title}**")
-    st.write(item["label"])
-
-    with st.expander(f"{title} — audit details"):
-        st.caption(item.get("detail", "No extra details available."))
-
-
-# ============================ CHART =================================
-
-def show_price_chart(df):
-    """Render a readable, explicitly UTC-labelled interactive chart."""
+def show_chart(df):
     st.markdown("**5M close and EMA chart (UTC)**")
-
     plot_df = df.tail(100).copy()
-    plot_df["time"] = pd.to_datetime(plot_df["time"], utc=True)
-
     chart_data = plot_df.melt(
         id_vars=["time"],
         value_vars=["close", "ema20", "ema50"],
-        var_name="Series",
+        var_name="Indicator",
         value_name="Price",
     )
 
@@ -484,11 +517,7 @@ def show_price_chart(df):
             x=alt.X(
                 "time:T",
                 title="Time (UTC)",
-                axis=alt.Axis(
-                    format="%b %d %H:%M",
-                    labelAngle=-45,
-                    tickCount=6,
-                ),
+                axis=alt.Axis(format="%b %d %H:%M", labelAngle=-45, tickCount=6),
             ),
             y=alt.Y(
                 "Price:Q",
@@ -496,29 +525,20 @@ def show_price_chart(df):
                 axis=alt.Axis(format=",.2f"),
                 scale=alt.Scale(zero=False),
             ),
-            color=alt.Color("Series:N", title="Indicator"),
+            color=alt.Color("Indicator:N", title="Indicator"),
             tooltip=[
-                alt.Tooltip(
-                    "time:T",
-                    title="Time (UTC)",
-                    format="%Y-%m-%d %H:%M",
-                ),
-                alt.Tooltip("Series:N", title="Series"),
-                alt.Tooltip(
-                    "Price:Q",
-                    title="Price",
-                    format=",.2f",
-                ),
+                alt.Tooltip("time:T", title="UTC", format="%Y-%m-%d %H:%M"),
+                "Indicator:N",
+                alt.Tooltip("Price:Q", format=",.2f"),
             ],
         )
         .properties(height=320)
         .interactive()
     )
-
     st.altair_chart(chart, use_container_width=True)
 
 
-# ============================ SCANNER ===============================
+# ======================== SCANNER ====================================
 
 def scan(symbol):
     df5 = add_emas(fetch_candles(symbol, "5m"))
@@ -536,8 +556,8 @@ def scan(symbol):
     latest = df5.iloc[-1]
 
     prior = df5.iloc[:-1].reset_index(drop=True)
-    swing_high = latest_swing(prior, "high")
-    swing_low = latest_swing(prior, "low")
+    sh = latest_swing(prior, "high")
+    sl = latest_swing(prior, "low")
 
     st.subheader(symbol)
     st.caption(
@@ -545,65 +565,53 @@ def scan(symbol):
         "| Binance public candles"
     )
 
-    metrics = st.columns(4)
-    metrics[0].metric("Last 5M close", price(latest["close"]))
-    metrics[1].metric("1H bias", bias1h)
-    metrics[2].metric("15M bias", bias15m)
-    metrics[3].metric("Alignment", alignment)
+    cols = st.columns(4)
+    cols[0].metric("Last 5M close", price(latest["close"]))
+    cols[1].metric("1H bias", bias1h)
+    cols[2].metric("15M bias", bias15m)
+    cols[3].metric("Alignment", alignment)
 
     left, right = st.columns(2)
-
     with left:
         show_signal("5M structure", structure)
         show_signal("Liquidity", sweep)
-
     with right:
         show_signal("Displacement", displacement)
         show_signal("Qualified FVG", fvg)
 
     st.markdown("**Latest confirmed, unbroken swing levels**")
-    swing_cols = st.columns(2)
-
-    swing_cols[0].metric(
-        "Swing high",
-        price(swing_high["price"]) if swing_high else "Not found",
-    )
-    swing_cols[1].metric(
-        "Swing low",
-        price(swing_low["price"]) if swing_low else "Not found",
-    )
-
-    if swing_high:
-        st.caption("Swing high pivot: " + fmt_time(swing_high["time"]))
-    if swing_low:
-        st.caption("Swing low pivot: " + fmt_time(swing_low["time"]))
+    a, b = st.columns(2)
+    a.metric("Swing high", price(sh["price"]) if sh else "Not found")
+    b.metric("Swing low", price(sl["price"]) if sl else "Not found")
+    if sh:
+        st.caption("Swing high pivot: " + fmt_time(sh["time"]))
+    if sl:
+        st.caption("Swing low pivot: " + fmt_time(sl["time"]))
 
     bullish = [
         bias1h == "Bullish" and bias15m == "Bullish",
-        sweep.get("detected") and sweep.get("direction") == "Bullish",
-        displacement.get("detected") and displacement.get("direction") == "Bullish",
-        structure.get("detected") and structure.get("direction") == "Bullish",
-        fvg.get("detected") and fvg.get("active") and fvg.get("direction") == "Bullish",
+        sweep["detected"] and sweep["direction"] == "Bullish",
+        displacement["detected"] and displacement["direction"] == "Bullish",
+        structure["detected"] and structure["direction"] == "Bullish",
+        fvg["detected"] and fvg["active"] and fvg["direction"] == "Bullish",
     ]
-
     bearish = [
         bias1h == "Bearish" and bias15m == "Bearish",
-        sweep.get("detected") and sweep.get("direction") == "Bearish",
-        displacement.get("detected") and displacement.get("direction") == "Bearish",
-        structure.get("detected") and structure.get("direction") == "Bearish",
-        fvg.get("detected") and fvg.get("active") and fvg.get("direction") == "Bearish",
+        sweep["detected"] and sweep["direction"] == "Bearish",
+        displacement["detected"] and displacement["direction"] == "Bearish",
+        structure["detected"] and structure["direction"] == "Bearish",
+        fvg["detected"] and fvg["active"] and fvg["direction"] == "Bearish",
     ]
 
     labels = [
         "1H and 15M alignment",
         "Liquidity sweep",
         "Displacement",
-        "Fresh BOS",
+        "Fresh BOS/CHOCH",
         "Qualified active FVG",
     ]
 
     bull_col, bear_col = st.columns(2)
-
     with bull_col:
         st.markdown(f"**Bullish checklist: {sum(bullish)}/5**")
         for label, passed in zip(labels, bullish):
@@ -615,66 +623,45 @@ def scan(symbol):
             st.write(("✅ " if passed else "⬜ ") + label)
 
     if sum(bullish) == 5 or sum(bearish) == 5:
-        st.success(
-            "All checklist conditions are present. Verify independently "
-            "before considering a paper trade."
-        )
+        st.success("All five checklist conditions are present. Verify the trade independently.")
+        setup_status = "Checklist complete — confirmation still required"
+    elif (
+        alignment in ["Bullish", "Bearish"]
+        and structure["detected"]
+        and structure["direction"] == alignment
+    ):
+        st.info("Potential setup: structure break aligns with higher-timeframe bias. Check remaining conditions.")
+        setup_status = "Potential setup — waiting for remaining confirmations"
+    elif alignment in ["Bullish", "Bearish"] and fvg["active"]:
+        st.info("Waiting for confirmation: aligned bias and an active FVG are present, but other conditions are missing.")
+        setup_status = "Waiting for confirmation"
     else:
-        st.warning(
-            "NO COMPLETE SETUP — at least one required condition is missing."
-        )
+        st.warning("NO COMPLETE SETUP — required conditions are missing.")
+        setup_status = "No complete setup"
 
-    show_price_chart(df5)
+    st.caption("Setup status: " + setup_status)
+    show_chart(df5)
 
     with st.expander("Signal audit: latest candle and recent context"):
+        st.markdown("**Structural trend estimate**")
+        st.write(infer_structural_trend(prior)["trend"])
+        st.caption(infer_structural_trend(prior)["detail"])
+
         audit = pd.DataFrame([
-            {
-                "Signal": "1H bias",
-                "Result": bias1h,
-                "Reference": fmt_time(df1h.iloc[-1]["time"]),
-            },
-            {
-                "Signal": "15M bias",
-                "Result": bias15m,
-                "Reference": fmt_time(df15.iloc[-1]["time"]),
-            },
-            {
-                "Signal": "Liquidity sweep",
-                "Result": sweep["label"],
-                "Reference": sweep["detail"],
-            },
-            {
-                "Signal": "Displacement",
-                "Result": displacement["label"],
-                "Reference": displacement["detail"],
-            },
-            {
-                "Signal": "BOS",
-                "Result": structure["label"],
-                "Reference": structure["detail"],
-            },
-            {
-                "Signal": "FVG",
-                "Result": fvg["label"],
-                "Reference": fvg["detail"],
-            },
+            {"Signal": "1H bias", "Result": bias1h, "Detail": fmt_time(df1h.iloc[-1]["time"])},
+            {"Signal": "15M bias", "Result": bias15m, "Detail": fmt_time(df15.iloc[-1]["time"])},
+            {"Signal": "Structure", "Result": structure["label"], "Detail": structure["detail"]},
+            {"Signal": "Liquidity", "Result": sweep["label"], "Detail": sweep["detail"]},
+            {"Signal": "Displacement", "Result": displacement["label"], "Detail": displacement["detail"]},
+            {"Signal": "FVG", "Result": fvg["label"], "Detail": fvg["detail"]},
         ])
-
         st.markdown("**Latest-candle signal checks**")
-        st.dataframe(
-            audit,
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(audit, use_container_width=True, hide_index=True)
 
+        candles = recent_candles(df5, 12)
         st.markdown("**Last 12 completed 5M candles**")
-        candle_table = recent_candles(df5, 12)
-        st.caption(f"Showing {len(candle_table)} completed candles.")
-        st.dataframe(
-            candle_table,
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.caption(f"Showing {len(candles)} completed candles.")
+        st.dataframe(candles, use_container_width=True, hide_index=True)
 
         if fvg.get("detected"):
             st.markdown("**FVG verification**")
@@ -683,31 +670,16 @@ def scan(symbol):
             st.write("Upper boundary: " + price(fvg["upper"]))
             st.write("Formation candle: " + fmt_time(fvg["formation_time"]))
             st.write("Current status: " + fvg["status"])
-
             if fvg.get("mitigation_time") is not None:
-                st.write(
-                    "First observed mitigation candle: "
-                    + fmt_time(fvg["mitigation_time"])
-                )
+                st.write("First observed mitigation candle: " + fmt_time(fvg["mitigation_time"]))
 
 
-# ============================ SIDEBAR ===============================
+# ======================== SIDEBAR ====================================
 
 with st.sidebar:
     st.header("Scanner settings")
-
-    symbols_text = st.text_input(
-        "Symbols (comma-separated)",
-        value=DEFAULT_SYMBOLS,
-    )
-
-    refresh_seconds = st.slider(
-        "Auto-refresh (seconds)",
-        min_value=30,
-        max_value=180,
-        value=60,
-        step=30,
-    )
+    symbols_text = st.text_input("Symbols (comma-separated)", DEFAULT_SYMBOLS)
+    refresh_seconds = st.slider("Auto-refresh (seconds)", 30, 180, 60, 30)
 
     st.caption("Market data: Binance public candles")
     st.caption("Only completed candles are analysed.")
@@ -718,155 +690,87 @@ with st.sidebar:
 
 try:
     from streamlit_autorefresh import st_autorefresh
-
-    st_autorefresh(
-        interval=refresh_seconds * 1000,
-        key="alphax_refresh",
-    )
+    st_autorefresh(interval=refresh_seconds * 1000, key="alphax_refresh")
 except Exception:
-    st.caption("Auto-refresh helper unavailable; use Refresh market data.")
+    st.caption("Auto-refresh unavailable; use Refresh market data.")
 
 
-# ============================ TABS ==================================
+# ======================== TABS =======================================
 
-tabs = st.tabs([
-    "Market Scanner",
-    "Setup Validator",
-    "Paper Journal",
-    "CSV Analysis",
-])
+tabs = st.tabs(["Market Scanner", "Setup Validator", "Paper Journal", "CSV Analysis"])
 
-
-# ---------------------------- MARKET SCANNER -------------------------
 
 with tabs[0]:
     st.subheader("Multi-timeframe SMC scanner")
-    st.caption(
-        "1H/15M provide directional context. 5M is used to review "
-        "structure, liquidity, displacement and FVG."
-    )
+    st.caption("1H/15M provide directional context. 5M is used for execution review.")
 
     symbols = list(dict.fromkeys(
-        item.strip().upper()
-        for item in symbols_text.split(",")
-        if item.strip()
+        s.strip().upper() for s in symbols_text.split(",") if s.strip()
     ))[:10]
 
     if not symbols:
-        st.warning("Enter at least one Binance symbol, such as BTCUSDT.")
+        st.warning("Enter at least one symbol, e.g. BTCUSDT.")
 
     for symbol in symbols:
         try:
             scan(symbol)
             st.divider()
         except requests.HTTPError as exc:
-            st.error(
-                f"{symbol}: Binance request failed ({exc}). "
-                "Check the symbol and refresh."
-            )
+            st.error(f"{symbol}: Binance request failed: {exc}")
         except requests.RequestException as exc:
             st.error(f"{symbol}: network error: {exc}")
         except Exception as exc:
             st.error(f"{symbol}: scan failed: {exc}")
 
 
-# ---------------------------- SETUP VALIDATOR ------------------------
-
 with tabs[1]:
     st.subheader("Setup Validator")
-    st.caption("Manual checklist only. This does not place trades.")
+    st.caption("Manual checklist only. No trades are placed.")
 
-    validator_symbol = st.text_input(
-        "Symbol",
-        value="BTCUSDT",
-        key="validator_symbol",
-    ).upper().strip()
-
-    direction = st.selectbox(
-        "Direction",
-        ["Bearish", "Bullish"],
-        key="validator_direction",
-    )
-
+    symbol = st.text_input("Symbol", "BTCUSDT", key="validator_symbol").upper().strip()
+    direction = st.selectbox("Direction", ["Bearish", "Bullish"])
     questions = [
         "1H and 15M aligned with direction?",
         "Liquidity sweep confirmed?",
         "Displacement confirmed?",
-        "Fresh BOS confirmed?",
+        "Fresh BOS or CHOCH confirmed?",
         "Qualified active FVG confirmed?",
     ]
-
     answers = [
-        st.selectbox(question, ["No", "Yes"], key=f"validator_{i}")
-        for i, question in enumerate(questions)
+        st.selectbox(q, ["No", "Yes"], key=f"validator_{i}")
+        for i, q in enumerate(questions)
     ]
 
     if st.button("Validate setup"):
-        score = sum(answer == "Yes" for answer in answers)
-        st.write(f"**{validator_symbol} {direction}: {score}/5**")
-
-        for question, answer in zip(questions, answers):
-            st.write(("✅ " if answer == "Yes" else "⬜ ") + question)
-
+        score = sum(a == "Yes" for a in answers)
+        st.write(f"**{symbol} {direction}: {score}/5**")
+        for q, a in zip(questions, answers):
+            st.write(("✅ " if a == "Yes" else "⬜ ") + q)
         if score == 5:
-            st.success(
-                "Checklist complete. Independently verify entry, "
-                "stop-loss, target and risk."
-            )
+            st.success("Checklist complete. Independently verify risk and execution.")
         else:
             st.warning("Setup incomplete under this checklist.")
 
 
-# ---------------------------- PAPER JOURNAL -------------------------
-
 with tabs[2]:
     st.subheader("Paper Journal")
-    st.caption(
-        "Session-only journal; no exchange orders are placed. "
-        "Entries may disappear when the app session restarts."
-    )
+    st.caption("Session-only journal; no exchange orders are placed.")
 
     if "paper_journal" not in st.session_state:
         st.session_state.paper_journal = []
 
     with st.form("paper_journal_form"):
-        journal_symbol = st.text_input(
-            "Symbol",
-            value="BTCUSDT",
-        ).upper().strip()
-
-        journal_direction = st.selectbox(
-            "Direction",
-            ["Long", "Short"],
-        )
-
-        entry = st.number_input(
-            "Entry price",
-            min_value=0.0,
-            value=0.0,
-            format="%.8f",
-        )
-        stop = st.number_input(
-            "Stop-loss",
-            min_value=0.0,
-            value=0.0,
-            format="%.8f",
-        )
-        target = st.number_input(
-            "Target",
-            min_value=0.0,
-            value=0.0,
-            format="%.8f",
-        )
+        journal_symbol = st.text_input("Symbol", "BTCUSDT").upper().strip()
+        journal_direction = st.selectbox("Trade direction", ["Long", "Short"])
+        entry = st.number_input("Entry price", min_value=0.0, value=0.0)
+        stop = st.number_input("Stop-loss", min_value=0.0, value=0.0)
+        target = st.number_input("Target", min_value=0.0, value=0.0)
         notes = st.text_area("Setup notes")
-
         submitted = st.form_submit_button("Add paper entry")
 
         if submitted:
             st.session_state.paper_journal.append({
-                "UTC created": datetime.now(timezone.utc).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
+                "UTC created": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                 "Symbol": journal_symbol,
                 "Direction": journal_direction,
                 "Entry": entry,
@@ -875,24 +779,17 @@ with tabs[2]:
                 "Notes": notes,
                 "Status": "Open (paper)",
             })
-            st.success("Paper entry added to this session.")
+            st.success("Paper entry added.")
 
     if st.session_state.paper_journal:
         journal_df = pd.DataFrame(st.session_state.paper_journal)
-
-        st.dataframe(
-            journal_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
+        st.dataframe(journal_df, use_container_width=True, hide_index=True)
         st.download_button(
             "Download paper journal CSV",
             journal_df.to_csv(index=False).encode("utf-8"),
             "alphax_paper_journal.csv",
             "text/csv",
         )
-
         if st.button("Clear session journal"):
             st.session_state.paper_journal = []
             st.rerun()
@@ -900,98 +797,55 @@ with tabs[2]:
         st.info("No paper entries in this session yet.")
 
 
-# ---------------------------- CSV ANALYSIS ---------------------------
-
 with tabs[3]:
     st.subheader("CSV Analysis")
-    st.caption(
-        "Upload a candle CSV containing open, high, low and close columns."
-    )
+    st.caption("Upload a candle CSV containing open, high, low and close columns.")
+    uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
-    uploaded_file = st.file_uploader(
-        "Upload CSV",
-        type=["csv"],
-    )
-
-    if uploaded_file is not None:
+    if uploaded is not None:
         try:
-            data = pd.read_csv(uploaded_file)
-
-            st.dataframe(
-                data.head(20),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            column_map = {
-                str(column).lower().strip(): column
-                for column in data.columns
-            }
-
+            data = pd.read_csv(uploaded)
+            st.dataframe(data.head(20), use_container_width=True, hide_index=True)
+            column_map = {str(c).lower().strip(): c for c in data.columns}
             required = ["open", "high", "low", "close"]
-            missing = [
-                column for column in required
-                if column not in column_map
-            ]
+            missing = [c for c in required if c not in column_map]
 
             if missing:
                 st.error("Missing required columns: " + ", ".join(missing))
             else:
-                for column in required:
-                    original = column_map[column]
-                    data[original] = pd.to_numeric(
-                        data[original],
-                        errors="coerce",
-                    )
+                for col in required:
+                    original = column_map[col]
+                    data[original] = pd.to_numeric(data[original], errors="coerce")
 
                 clean = data.dropna(
-                    subset=[column_map[column] for column in required]
+                    subset=[column_map[c] for c in required]
                 ).copy()
-
-                close_column = column_map["close"]
-                clean["return_pct"] = clean[close_column].pct_change() * 100
+                close_col = column_map["close"]
+                clean["return_pct"] = clean[close_col].pct_change() * 100
 
                 st.metric("Rows analysed", len(clean))
-
-                if len(clean):
-                    st.metric(
-                        "Latest close",
-                        price(clean[close_column].iloc[-1]),
-                    )
-                else:
-                    st.metric("Latest close", "N/A")
-
-                if len(clean) > 1:
-                    average_return = clean["return_pct"].abs().mean()
-                    st.metric(
-                        "Average absolute candle return (%)",
-                        f"{average_return:.4f}",
-                    )
-                else:
-                    st.metric(
-                        "Average absolute candle return (%)",
-                        "N/A",
-                    )
-
-                st.line_chart(
-                    clean[[close_column]],
-                    height=240,
+                st.metric(
+                    "Latest close",
+                    price(clean[close_col].iloc[-1]) if len(clean) else "N/A",
                 )
 
+                if len(clean) > 1:
+                    st.metric(
+                        "Average absolute candle return (%)",
+                        f"{clean['return_pct'].abs().mean():.4f}",
+                    )
+
+                st.line_chart(clean[[close_col]], height=240)
                 st.download_button(
                     "Download analysed CSV",
                     clean.to_csv(index=False).encode("utf-8"),
                     "alphax_csv_analysis.csv",
                     "text/csv",
                 )
-
         except Exception as exc:
             st.error(f"Could not analyse CSV: {exc}")
 
 
-# ============================ FOOTER ================================
-
 st.caption(
-    f"AlphaX Signal Desk v{VERSION} | Educational research and "
-    "paper trading only. No signal is guaranteed."
+    f"AlphaX Signal Desk v{VERSION} | Educational research and paper trading only."
 )
