@@ -5,779 +5,866 @@ import streamlit as st
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
+# ============================================================
+# ALPHAX SIGNAL DESK v0.4.1
+# SMC: Bias, Liquidity, Displacement, BOS/CHOCH and FVG
+# Educational scanner only — no live order execution.
+# ============================================================
 
-APP_VERSION = "0.4.0"
-BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
+APP_VERSION = "0.4.1"
+BINANCE_BASE_URL = "https://data-api.binance.vision"
+DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+INTERVALS = {
+    "1H": "1h",
+    "15M": "15m",
+    "5M": "5m",
+}
 
 st.set_page_config(
     page_title="AlphaX Signal Desk",
-    page_icon="📈",
+    page_icon="📊",
     layout="wide",
 )
 
-st.title("🔵🔴 AlphaX Signal Desk")
+st.title("📊 AlphaX Signal Desk")
 st.caption(
-    f"Version {APP_VERSION} | SMC Signal Engine | "
-    "Educational analysis — no live trade execution"
+    f"SMC Scanner v{APP_VERSION} | "
+    "Liquidity • Displacement • BOS/CHOCH • FVG"
+)
+st.warning(
+    "Educational analysis only. Signals are estimates, not financial advice. "
+    "Confirm setups independently. No live trades are placed."
 )
 
 
-# ==================================================
-# SETTINGS
-# ==================================================
-
-st.sidebar.header("Desk Settings")
-
-symbols = st.sidebar.multiselect(
-    "Crypto markets (Binance Spot)",
-    ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-    default=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-)
-
-auto_refresh = st.sidebar.checkbox(
-    "Auto-refresh every 60 seconds",
-    value=True,
-)
-
-if auto_refresh:
-    st_autorefresh(interval=60_000, key="alphax_refresh")
-
-st.sidebar.caption(
-    "Forex and gold: upload candle CSV files in CSV Analysis."
-)
-
-
-# ==================================================
-# DATA
-# ==================================================
+# ============================================================
+# MARKET DATA
+# ============================================================
 
 @st.cache_data(ttl=55, show_spinner=False)
-def fetch_candles(symbol, interval, limit=200):
+def fetch_candles(symbol, interval, limit=250):
+    """Fetch completed public Binance candles."""
+
+    url = f"{BINANCE_BASE_URL}/api/v3/klines"
+
+    # API CORRECTION INCLUDED:
+    # Binance requires values such as 1h, 15m and 5m.
     interval_map = {
         "60": "1h",
         "15": "15m",
         "5": "5m",
+        "1h": "1h",
+        "15m": "15m",
+        "5m": "5m",
     }
+    api_interval = interval_map.get(str(interval).lower())
 
-    if interval not in interval_map:
+    if api_interval is None:
         raise ValueError(f"Unsupported interval: {interval}")
 
     response = requests.get(
-        BINANCE_URL,
+        url,
         params={
-            "symbol": symbol,
-            "interval": interval_map[interval],
+            "symbol": symbol.upper(),
+            "interval": api_interval,
             "limit": limit,
         },
         timeout=15,
-        headers={"User-Agent": "AlphaX-Signal-Desk"},
+        headers={"User-Agent": "AlphaX-Signal-Desk/0.4.1"},
     )
     response.raise_for_status()
     rows = response.json()
 
-    if not isinstance(rows, list) or len(rows) < 60:
-        raise ValueError("Insufficient candle data returned.")
+    if not rows:
+        raise ValueError(f"No candles returned for {symbol}.")
 
     columns = [
         "open_time", "open", "high", "low", "close", "volume",
-        "close_time", "quote_volume", "trades",
-        "taker_buy_volume", "taker_buy_quote_volume", "ignore",
+        "close_time", "quote_volume", "trades", "taker_buy_base",
+        "taker_buy_quote", "ignore",
     ]
 
     df = pd.DataFrame(rows, columns=columns)
 
-    df["time"] = pd.to_datetime(
-        df["open_time"], unit="ms", utc=True
-    )
-
     for column in ["open", "high", "low", "close", "volume"]:
         df[column] = pd.to_numeric(df[column], errors="coerce")
 
+    df["open_time"] = pd.to_numeric(df["open_time"], errors="coerce")
+    df["close_time"] = pd.to_numeric(df["close_time"], errors="coerce")
+
     df = df.dropna(
-        subset=["open", "high", "low", "close", "volume"]
+        subset=["open", "high", "low", "close", "open_time", "close_time"]
     )
-    df = df.sort_values("time").reset_index(drop=True)
+    df = df.sort_values("open_time").drop_duplicates("open_time")
 
-    # Binance may include a candle that has not closed yet.
-    # Exclude it to reduce signals based on incomplete candles.
-    if len(df) > 1:
-        now = pd.Timestamp.now(tz="UTC")
-        if df.iloc[-1]["time"] + pd.Timedelta(
-            minutes=int(interval)
-        ) > now:
-            df = df.iloc[:-1].copy()
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    if len(df) < 55:
-        raise ValueError("Not enough completed candles for analysis.")
+    # Exclude the candle that has not closed yet.
+    df = df[df["close_time"] < now_ms].copy()
+    df.reset_index(drop=True, inplace=True)
 
-    return df.reset_index(drop=True)
+    if len(df) < 80:
+        raise ValueError(
+            f"Not enough completed candles for {symbol} on {api_interval}."
+        )
+
+    return df
 
 
-def trend_bias(df):
-    if len(df) < 55:
-        return "Insufficient data"
+def add_indicators(df):
+    df = df.copy()
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    df["body"] = (df["close"] - df["open"]).abs()
+    return df
 
-    close = df["close"]
-    ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-    ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1]
-    last = close.iloc[-1]
 
-    if last > ema20 > ema50:
+def get_bias(df):
+    last = df.iloc[-1]
+
+    if last["ema20"] > last["ema50"] and last["close"] > last["ema20"]:
         return "Bullish"
-    if last < ema20 < ema50:
+
+    if last["ema20"] < last["ema50"] and last["close"] < last["ema20"]:
         return "Bearish"
+
     return "Neutral"
 
 
-# ==================================================
-# SMC ENGINE
-# ==================================================
+def get_alignment(bias_1h, bias_15m):
+    if bias_1h == bias_15m and bias_1h in ("Bullish", "Bearish"):
+        return bias_1h
 
-def smc_analysis(df):
-    """
-    Rule-based SMC approximation:
-    - Confirmed swing points
-    - Liquidity sweep and reclaim
-    - Candle-body displacement
-    - BOS / possible CHOCH
-    - Three-candle FVG
-    - Confluence-based potential setup
+    if "Neutral" in (bias_1h, bias_15m):
+        return "Neutral / waiting"
 
-    This is not a complete discretionary SMC interpretation.
-    """
+    return "Conflict"
 
-    result = {
-        "bias": trend_bias(df),
-        "sweep": "No clear sweep",
-        "sweep_direction": None,
-        "displacement": False,
-        "structure": "No confirmed break",
-        "structure_direction": None,
-        "fvg": "No recent FVG",
-        "fvg_direction": None,
-        "fvg_low": None,
-        "fvg_high": None,
-        "setup": "No complete setup",
-        "reasons": [],
-        "swing_high": None,
-        "swing_low": None,
-        "inducement": "Not confirmed",
-    }
 
-    if len(df) < 60:
-        result["reasons"].append("Insufficient candles.")
-        return result
+# ============================================================
+# SWING DETECTION
+# ============================================================
 
-    # Use only completed candles supplied by fetch_candles().
-    df = df.reset_index(drop=True).copy()
+def find_swings(df, left=3, right=3):
+    """Identify pivots with candles on both sides."""
 
-    # Find locally confirmed swing highs and lows.
-    # A swing is only considered confirmed after candles
-    # on both sides of it are available.
-    window = 3
-    swing_highs = []
-    swing_lows = []
+    highs = []
+    lows = []
 
-    for i in range(window, len(df) - window):
-        high = df.loc[i, "high"]
-        low = df.loc[i, "low"]
+    for i in range(left, len(df) - right):
+        high = float(df["high"].iloc[i])
+        low = float(df["low"].iloc[i])
 
-        left_highs = df.loc[i-window:i-1, "high"]
-        right_highs = df.loc[i+1:i+window, "high"]
-        left_lows = df.loc[i-window:i-1, "low"]
-        right_lows = df.loc[i+1:i+window, "low"]
+        left_highs = df["high"].iloc[i-left:i]
+        right_highs = df["high"].iloc[i+1:i+right+1]
+        left_lows = df["low"].iloc[i-left:i]
+        right_lows = df["low"].iloc[i+1:i+right+1]
 
         if high > left_highs.max() and high >= right_highs.max():
-            swing_highs.append((i, float(high)))
+            highs.append({"index": i, "price": high})
 
         if low < left_lows.min() and low <= right_lows.min():
-            swing_lows.append((i, float(low)))
+            lows.append({"index": i, "price": low})
 
-    # Exclude the latest three candles from swing confirmation:
-    # those swings would not yet have enough right-side candles.
-    latest = df.iloc[-1]
-    previous = df.iloc[-2]
+    return highs, lows
 
-    confirmed_highs = [
-        item for item in swing_highs if item[0] <= len(df) - 4
-    ]
-    confirmed_lows = [
-        item for item in swing_lows if item[0] <= len(df) - 4
-    ]
 
-    if confirmed_highs:
-        result["swing_high"] = confirmed_highs[-1][1]
+def swing_level_status(df, swing, direction):
+    """Check whether later completed closes already broke a swing."""
 
-    if confirmed_lows:
-        result["swing_low"] = confirmed_lows[-1][1]
+    pivot_index = swing["index"]
+    level = swing["price"]
+    later = df.iloc[pivot_index + 1:]
 
-    # Liquidity sweep: trade beyond a recent swing and close back
-    # on the inside of the level.
-    recent_highs = [
-        price for index, price in confirmed_highs
-        if index >= len(df) - 35
-    ]
-    recent_lows = [
-        price for index, price in confirmed_lows
-        if index >= len(df) - 35
-    ]
+    if later.empty:
+        return "Unbroken"
 
-    swept_high_level = (
-        recent_highs[-1] if recent_highs else None
-    )
-    swept_low_level = recent_lows[-1] if recent_lows else None
-
-    swept_high = (
-        swept_high_level is not None
-        and latest["high"] > swept_high_level
-        and latest["close"] < swept_high_level
-    )
-
-    swept_low = (
-        swept_low_level is not None
-        and latest["low"] < swept_low_level
-        and latest["close"] > swept_low_level
-    )
-
-    if swept_low:
-        result["sweep"] = "Sell-side liquidity swept and reclaimed"
-        result["sweep_direction"] = "Bullish"
-    elif swept_high:
-        result["sweep"] = "Buy-side liquidity swept and rejected"
-        result["sweep_direction"] = "Bearish"
-
-    # Displacement: latest candle body is unusually large compared
-    # with the median body of the preceding ten candles.
-    body = abs(float(latest["close"] - latest["open"]))
-    prior_bodies = (
-        df.iloc[-11:-1]["close"] - df.iloc[-11:-1]["open"]
-    ).abs()
-    median_body = prior_bodies.median()
-
-    result["displacement"] = bool(
-        pd.notna(median_body)
-        and median_body > 0
-        and body >= 1.5 * median_body
-    )
-
-    if result["displacement"]:
-        result["displacement_direction"] = (
-            "Bullish" if latest["close"] > latest["open"]
-            else "Bearish" if latest["close"] < latest["open"]
-            else "Neutral"
-        )
+    if direction == "high":
+        broken = (later["close"] > level).any()
     else:
-        result["displacement_direction"] = None
+        broken = (later["close"] < level).any()
 
-    # Structure break against the most recent confirmed swing.
-    if (
-        result["swing_high"] is not None
-        and latest["close"] > result["swing_high"]
-    ):
-        result["structure"] = "Bullish break of structure (BOS)"
-        result["structure_direction"] = "Bullish"
-
-    elif (
-        result["swing_low"] is not None
-        and latest["close"] < result["swing_low"]
-    ):
-        result["structure"] = "Bearish break of structure (BOS)"
-        result["structure_direction"] = "Bearish"
-
-    # Possible change of character (CHOCH) is a break that runs
-    # against the EMA directional bias. This is only a heuristic.
-    if (
-        result["structure_direction"] == "Bullish"
-        and result["bias"] == "Bearish"
-    ):
-        result["structure"] = "Possible bullish CHOCH"
-
-    elif (
-        result["structure_direction"] == "Bearish"
-        and result["bias"] == "Bullish"
-    ):
-        result["structure"] = "Possible bearish CHOCH"
-
-    # Three-candle FVG:
-    # Bullish gap: current low > high two candles earlier.
-    # Bearish gap: current high < low two candles earlier.
-    fvg_found = False
-
-    for i in range(len(df) - 1, max(1, len(df) - 9), -1):
-        candle_now = df.iloc[i]
-        candle_two_back = df.iloc[i - 2]
-
-        if candle_now["low"] > candle_two_back["high"]:
-            result["fvg"] = "Bullish FVG"
-            result["fvg_direction"] = "Bullish"
-            result["fvg_low"] = float(candle_two_back["high"])
-            result["fvg_high"] = float(candle_now["low"])
-            fvg_found = True
-            break
-
-        if candle_now["high"] < candle_two_back["low"]:
-            result["fvg"] = "Bearish FVG"
-            result["fvg_direction"] = "Bearish"
-            result["fvg_low"] = float(candle_now["high"])
-            result["fvg_high"] = float(candle_two_back["low"])
-            fvg_found = True
-            break
-
-    # Potential inducement proxy:
-    # price has recently made a local swing, but this alone does
-    # not establish true inducement in a discretionary SMC model.
-    if len(confirmed_highs) >= 2 and len(confirmed_lows) >= 2:
-        result["inducement"] = (
-            "Swing levels available for manual review"
-        )
-
-    # Setup confluence. A signal is potential, not an instruction
-    # to enter. The FVG must point in the same direction.
-    bullish_checks = {
-        "Bullish 1H/15M alignment": result["bias"] == "Bullish",
-        "Sell-side sweep": result["sweep_direction"] == "Bullish",
-        "Bullish displacement": (
-            result["displacement"]
-            and result["displacement_direction"] == "Bullish"
-        ),
-        "Bullish structure break": (
-            result["structure_direction"] == "Bullish"
-        ),
-        "Bullish FVG": result["fvg_direction"] == "Bullish",
-    }
-
-    bearish_checks = {
-        "Bearish 1H/15M alignment": result["bias"] == "Bearish",
-        "Buy-side sweep": result["sweep_direction"] == "Bearish",
-        "Bearish displacement": (
-            result["displacement"]
-            and result["displacement_direction"] == "Bearish"
-        ),
-        "Bearish structure break": (
-            result["structure_direction"] == "Bearish"
-        ),
-        "Bearish FVG": result["fvg_direction"] == "Bearish",
-    }
-
-    # Directional EMA alignment is checked separately across timeframes
-    # in analyse_market().
-    result["bullish_checks"] = bullish_checks
-    result["bearish_checks"] = bearish_checks
-
-    return result
+    return "Broken" if broken else "Unbroken"
 
 
-def analyse_market(symbol):
-    h1 = fetch_candles(symbol, "60")
-    m15 = fetch_candles(symbol, "15")
-    m5 = fetch_candles(symbol, "5")
+# ============================================================
+# FRESH BOS / CHOCH
+# ============================================================
 
-    bias_1h = trend_bias(h1)
-    bias_15m = trend_bias(m15)
-    smc = smc_analysis(m5)
+def detect_fresh_structure_break(df, highs, lows, bias):
+    """
+    A fresh break requires the previous close to be on the
+    original side and the latest close to cross an unbroken level.
+    """
 
-    bullish_alignment = (
-        bias_1h == "Bullish" and bias_15m == "Bullish"
-    )
-    bearish_alignment = (
-        bias_1h == "Bearish" and bias_15m == "Bearish"
-    )
+    if len(df) < 2:
+        return {
+            "event": "None",
+            "direction": None,
+            "level": None,
+            "message": "Not enough candles.",
+        }
 
-    smc["bullish_checks"]["Bullish 1H/15M alignment"] = (
-        bullish_alignment
-    )
-    smc["bearish_checks"]["Bearish 1H/15M alignment"] = (
-        bearish_alignment
-    )
+    previous_close = float(df["close"].iloc[-2])
+    current_close = float(df["close"].iloc[-1])
+    prior_df = df.iloc[:-1]
+    candidates = []
 
-    bullish_count = sum(smc["bullish_checks"].values())
-    bearish_count = sum(smc["bearish_checks"].values())
+    for swing in highs:
+        level = swing["price"]
 
-    if bullish_count == 5:
-        smc["setup"] = "Potential bullish SMC confluence"
-    elif bearish_count == 5:
-        smc["setup"] = "Potential bearish SMC confluence"
-    elif bullish_count >= 3 and bullish_alignment:
-        smc["setup"] = "Bullish watchlist — incomplete confirmation"
-    elif bearish_count >= 3 and bearish_alignment:
-        smc["setup"] = "Bearish watchlist — incomplete confirmation"
+        if (
+            swing_level_status(prior_df, swing, "high") == "Unbroken"
+            and previous_close <= level
+            and current_close > level
+        ):
+            candidates.append({
+                "direction": "Bullish",
+                "level": level,
+                "pivot_index": swing["index"],
+            })
+
+    for swing in lows:
+        level = swing["price"]
+
+        if (
+            swing_level_status(prior_df, swing, "low") == "Unbroken"
+            and previous_close >= level
+            and current_close < level
+        ):
+            candidates.append({
+                "direction": "Bearish",
+                "level": level,
+                "pivot_index": swing["index"],
+            })
+
+    if not candidates:
+        return {
+            "event": "None",
+            "direction": None,
+            "level": None,
+            "message": "No fresh close-through of an unbroken swing.",
+        }
+
+    event = max(candidates, key=lambda item: item["pivot_index"])
+    direction = event["direction"]
+
+    if bias in ("Bullish", "Bearish") and direction != bias:
+        event_name = "CHOCH"
     else:
-        smc["setup"] = "No complete setup"
-
-    smc["bullish_score"] = bullish_count
-    smc["bearish_score"] = bearish_count
+        event_name = "BOS"
 
     return {
-        "symbol": symbol,
-        "price": float(m5["close"].iloc[-1]),
-        "time": m5["time"].iloc[-1],
-        "bias_1h": bias_1h,
-        "bias_15m": bias_15m,
-        "smc": smc,
-        "candles": m5,
+        "event": event_name,
+        "direction": direction,
+        "level": event["level"],
+        "message": (
+            f"Fresh {direction.lower()} {event_name} at "
+            f"{event['level']:.6g}"
+        ),
     }
 
 
-# ==================================================
-# SESSION STATE
-# ==================================================
+# ============================================================
+# LIQUIDITY SWEEP
+# ============================================================
 
-if "journal" not in st.session_state:
-    st.session_state.journal = []
+def detect_sweep(df):
+    candle = df.iloc[-1]
+    high = float(candle["high"])
+    low = float(candle["low"])
+    close = float(candle["close"])
 
-if "market_results" not in st.session_state:
-    st.session_state.market_results = {}
+    prior_df = df.iloc[:-1]
+    prior_highs, prior_lows = find_swings(prior_df)
 
-if "last_setup" not in st.session_state:
-    st.session_state.last_setup = None
-
-
-# ==================================================
-# TABS
-# ==================================================
-
-tab_market, tab_manual, tab_journal, tab_csv = st.tabs(
-    [
-        "📊 Market Scanner",
-        "🎯 Setup Validator",
-        "📒 Paper Journal",
-        "📁 CSV Analysis",
+    swept_highs = [
+        s for s in prior_highs
+        if swing_level_status(prior_df, s, "high") == "Unbroken"
+        and high > s["price"]
+        and close < s["price"]
     ]
+
+    swept_lows = [
+        s for s in prior_lows
+        if swing_level_status(prior_df, s, "low") == "Unbroken"
+        and low < s["price"]
+        and close > s["price"]
+    ]
+
+    if swept_lows:
+        level = max(swept_lows, key=lambda s: s["index"])["price"]
+        return {
+            "direction": "Bullish",
+            "level": level,
+            "message": f"Sell-side sweep and reclaim at {level:.6g}",
+        }
+
+    if swept_highs:
+        level = max(swept_highs, key=lambda s: s["index"])["price"]
+        return {
+            "direction": "Bearish",
+            "level": level,
+            "message": f"Buy-side sweep and rejection at {level:.6g}",
+        }
+
+    return {
+        "direction": None,
+        "level": None,
+        "message": "No confirmed sweep on the latest candle.",
+    }
+
+
+# ============================================================
+# DISPLACEMENT
+# ============================================================
+
+def displacement_info(df, multiplier=1.5):
+    if len(df) < 15:
+        return {
+            "valid": False,
+            "direction": None,
+            "message": "Not enough candles.",
+        }
+
+    latest = df.iloc[-1]
+    baseline = float(df["body"].iloc[-11:-1].median())
+    body = float(latest["body"])
+
+    if baseline <= 0 or body < multiplier * baseline:
+        return {
+            "valid": False,
+            "direction": None,
+            "message": "No qualifying displacement on latest candle.",
+        }
+
+    if latest["close"] > latest["open"]:
+        direction = "Bullish"
+    elif latest["close"] < latest["open"]:
+        direction = "Bearish"
+    else:
+        return {
+            "valid": False,
+            "direction": None,
+            "message": "Doji candle.",
+        }
+
+    return {
+        "valid": True,
+        "direction": direction,
+        "message": (
+            f"{direction} displacement; body {body:.6g}, "
+            f"baseline {baseline:.6g}."
+        ),
+    }
+
+
+# ============================================================
+# QUALIFIED FVG AND MITIGATION
+# ============================================================
+
+def find_qualified_fvg(df, lookback=60, displacement_multiplier=1.3):
+    """
+    Bullish FVG: third-candle low > first-candle high.
+    Bearish FVG: third-candle high < first-candle low.
+
+    The middle candle must qualify as displacement.
+    Subsequent candles determine mitigation status.
+    """
+
+    n = len(df)
+    start = max(2, n - lookback)
+    candidates = []
+
+    for i in range(n - 1, start - 1, -1):
+        first = df.iloc[i - 2]
+        middle = df.iloc[i - 1]
+        third = df.iloc[i]
+
+        baseline_start = max(0, i - 11)
+        prior_bodies = df["body"].iloc[baseline_start:i - 1]
+
+        if len(prior_bodies) < 5:
+            continue
+
+        baseline = float(prior_bodies.median())
+        middle_body = float(middle["body"])
+
+        if baseline <= 0:
+            continue
+
+        if middle_body < displacement_multiplier * baseline:
+            continue
+
+        bullish_gap = float(third["low"]) > float(first["high"])
+        bearish_gap = float(third["high"]) < float(first["low"])
+
+        if bullish_gap and middle["close"] > middle["open"]:
+            lower = float(first["high"])
+            upper = float(third["low"])
+            direction = "Bullish"
+
+        elif bearish_gap and middle["close"] < middle["open"]:
+            lower = float(third["high"])
+            upper = float(first["low"])
+            direction = "Bearish"
+
+        else:
+            continue
+
+        if upper <= lower:
+            continue
+
+        later = df.iloc[i + 1:]
+
+        if direction == "Bullish":
+            later_lows = later["low"]
+
+            if len(later_lows) and float(later_lows.min()) <= lower:
+                status = "Filled"
+            elif len(later_lows) and float(later_lows.min()) < upper:
+                status = "Partially mitigated"
+            else:
+                status = "Unfilled"
+
+        else:
+            later_highs = later["high"]
+
+            if len(later_highs) and float(later_highs.max()) >= upper:
+                status = "Filled"
+            elif len(later_highs) and float(later_highs.max()) > lower:
+                status = "Partially mitigated"
+            else:
+                status = "Unfilled"
+
+        candidates.append({
+            "direction": direction,
+            "lower": lower,
+            "upper": upper,
+            "status": status,
+            "index": i,
+            "created_at": int(df["open_time"].iloc[i]),
+        })
+
+    active = [
+        zone for zone in candidates
+        if zone["status"] in ("Unfilled", "Partially mitigated")
+    ]
+
+    if active:
+        return max(active, key=lambda zone: zone["index"])
+
+    if candidates:
+        latest = max(candidates, key=lambda zone: zone["index"])
+        latest["status"] = "Filled"
+        return latest
+
+    return None
+
+
+# ============================================================
+# SMC ENGINE AND CHECKLIST
+# ============================================================
+
+def smc_analysis(raw_df, bias):
+    df = add_indicators(raw_df)
+    highs, lows = find_swings(df)
+
+    structure = detect_fresh_structure_break(df, highs, lows, bias)
+    sweep = detect_sweep(df)
+    displacement = displacement_info(df)
+    fvg = find_qualified_fvg(df)
+
+    latest = df.iloc[-1]
+
+    swing_high = max(highs, key=lambda s: s["index"]) if highs else None
+    swing_low = max(lows, key=lambda s: s["index"]) if lows else None
+
+    return {
+        "df": df,
+        "close": float(latest["close"]),
+        "structure": structure,
+        "sweep": sweep,
+        "displacement": displacement,
+        "fvg": fvg,
+        "swing_high": swing_high,
+        "swing_low": swing_low,
+    }
+
+
+def score_setup(direction, alignment, result):
+    fvg = result["fvg"]
+
+    checks = {
+        "1H and 15M alignment": alignment == direction,
+        "Liquidity sweep": result["sweep"]["direction"] == direction,
+        "Displacement": (
+            result["displacement"]["valid"]
+            and result["displacement"]["direction"] == direction
+        ),
+        "Fresh BOS/CHOCH": (
+            result["structure"]["direction"] == direction
+            and result["structure"]["event"] in ("BOS", "CHOCH")
+        ),
+        "Qualified active FVG": (
+            fvg is not None
+            and fvg["direction"] == direction
+            and fvg["status"] in ("Unfilled", "Partially mitigated")
+        ),
+    }
+
+    return sum(checks.values()), checks
+
+
+def classify_setup(alignment, bull_score, bear_score):
+    if alignment not in ("Bullish", "Bearish"):
+        return "WAIT — 1H/15M alignment missing"
+
+    score = bull_score if alignment == "Bullish" else bear_score
+
+    if score == 5:
+        return "FULL CHECKLIST — review 5M execution"
+
+    if score >= 3:
+        return "DEVELOPING — wait for missing confirmations"
+
+    return "NO COMPLETE SETUP"
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header("Scanner settings")
+
+symbols_text = st.sidebar.text_input(
+    "Symbols (comma-separated)",
+    value=",".join(DEFAULT_SYMBOLS),
 )
 
+symbols = list(dict.fromkeys(
+    item.strip().upper()
+    for item in symbols_text.split(",")
+    if item.strip()
+))[:10]
 
-# ==================================================
+refresh_seconds = st.sidebar.slider(
+    "Auto-refresh (seconds)",
+    min_value=30,
+    max_value=180,
+    value=60,
+    step=15,
+)
+
+st_autorefresh(
+    interval=refresh_seconds * 1000,
+    key="alphax_refresh",
+)
+
+st.sidebar.caption("Market data: Binance public candles")
+st.sidebar.caption("Only completed candles are analysed.")
+
+
+# ============================================================
+# TABS
+# ============================================================
+
+scanner_tab, validator_tab, journal_tab, csv_tab = st.tabs([
+    "Market Scanner",
+    "Setup Validator",
+    "Paper Journal",
+    "CSV Analysis",
+])
+
+
+# ============================================================
 # MARKET SCANNER
-# ==================================================
+# ============================================================
 
-with tab_market:
-    st.subheader("AlphaX SMC Signal Engine")
-
-    st.write(
-        "Checks EMA alignment, liquidity sweeps, displacement, "
-        "market structure and recent FVGs. Signals are heuristic "
-        "and require manual chart confirmation."
+with scanner_tab:
+    st.subheader("Multi-timeframe SMC scanner")
+    st.caption(
+        "1H/15M provide directional context. "
+        "5M is used to review structure, liquidity, displacement and FVG."
     )
 
-    if st.button("🔄 Scan selected markets", type="primary"):
-        if not symbols:
-            st.warning("Select at least one market.")
-        else:
-            results = {}
-            progress = st.progress(0)
-            status = st.empty()
-
-            for index, market in enumerate(symbols):
-                status.write(f"Scanning {market}...")
-
-                try:
-                    results[market] = analyse_market(market)
-                except Exception as exc:
-                    results[market] = {"error": str(exc)}
-
-                progress.progress((index + 1) / len(symbols))
-
-            st.session_state.market_results = results
-            status.write("Scan finished.")
-
-    results = st.session_state.market_results
-
     if not symbols:
-        st.info("Select one or more markets in the sidebar.")
-    elif not results:
-        st.info("Tap Scan selected markets to begin.")
-    else:
-        for market in symbols:
-            result = results.get(market)
+        st.info("Enter at least one symbol in the sidebar.")
 
-            if not result:
-                continue
+    for symbol in symbols:
+        with st.expander(symbol, expanded=True):
+            try:
+                with st.spinner(f"Loading {symbol}..."):
+                    raw_1h = fetch_candles(symbol, INTERVALS["1H"])
+                    raw_15m = fetch_candles(symbol, INTERVALS["15M"])
+                    raw_5m = fetch_candles(symbol, INTERVALS["5M"])
 
-            st.divider()
-            st.subheader(market)
+                    bias_1h = get_bias(add_indicators(raw_1h))
+                    bias_15m = get_bias(add_indicators(raw_15m))
+                    alignment = get_alignment(bias_1h, bias_15m)
 
-            if "error" in result:
-                st.error(f"Could not analyse {market}: {result['error']}")
-                continue
+                    result = smc_analysis(raw_5m, bias_15m)
 
-            smc = result["smc"]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Last 5M close", f"{result['close']:,.6g}")
+                c2.metric("1H bias", bias_1h)
+                c3.metric("15M bias", bias_15m)
+                c4.metric("Alignment", alignment)
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Latest completed close", f"{result['price']:,.6g}")
-            c2.metric("1H bias", result["bias_1h"])
-            c3.metric("15M bias", result["bias_15m"])
+                st.markdown("**5M structure**")
+                st.write(result["structure"]["message"])
 
-            st.markdown("#### SMC assessment")
+                st.markdown("**Liquidity**")
+                st.write(result["sweep"]["message"])
 
-            st.write(f"**Potential setup:** {smc['setup']}")
-            st.write(f"**Liquidity:** {smc['sweep']}")
-            st.write(
-                "**Displacement:** "
-                + (
-                    f"Present ({smc.get('displacement_direction')})"
-                    if smc["displacement"]
-                    else "Not confirmed"
-                )
-            )
-            st.write(f"**Structure:** {smc['structure']}")
-            st.write(f"**Recent FVG:** {smc['fvg']}")
-            st.write(f"**Inducement review:** {smc['inducement']}")
+                st.markdown("**Displacement**")
+                st.write(result["displacement"]["message"])
 
-            st.write(
-                f"**Bullish checklist:** "
-                f"{smc['bullish_score']}/5"
-            )
-            st.progress(smc["bullish_score"] / 5)
+                st.markdown("**Qualified FVG**")
+                fvg = result["fvg"]
 
-            st.write(
-                f"**Bearish checklist:** "
-                f"{smc['bearish_score']}/5"
-            )
-            st.progress(smc["bearish_score"] / 5)
+                if fvg is None:
+                    st.write("No qualified FVG found in the recent scan window.")
+                else:
+                    st.write(
+                        f"{fvg['direction']} zone: "
+                        f"{fvg['lower']:,.6g} – {fvg['upper']:,.6g} "
+                        f"| Status: {fvg['status']}"
+                    )
 
-            if smc["fvg_low"] is not None:
-                st.write(
-                    f"**FVG zone:** {smc['fvg_low']:,.8g} – "
-                    f"{smc['fvg_high']:,.8g}"
+                high_swing = result["swing_high"]
+                low_swing = result["swing_low"]
+
+                left, right = st.columns(2)
+
+                left.write(
+                    "Latest confirmed swing high: "
+                    + (
+                        f"{high_swing['price']:,.6g}"
+                        if high_swing else "N/A"
+                    )
                 )
 
-            if smc["swing_high"] is not None:
-                st.write(
-                    f"**Latest confirmed swing high:** "
-                    f"{smc['swing_high']:,.8g}"
+                right.write(
+                    "Latest confirmed swing low: "
+                    + (
+                        f"{low_swing['price']:,.6g}"
+                        if low_swing else "N/A"
+                    )
                 )
 
-            if smc["swing_low"] is not None:
-                st.write(
-                    f"**Latest confirmed swing low:** "
-                    f"{smc['swing_low']:,.8g}"
+                bull_score, bull_checks = score_setup(
+                    "Bullish", alignment, result
+                )
+                bear_score, bear_checks = score_setup(
+                    "Bearish", alignment, result
                 )
 
-            st.caption(
-                f"Last completed candle (UTC): {result['time']}"
-            )
+                score_left, score_right = st.columns(2)
+                score_left.metric("Bullish checklist", f"{bull_score}/5")
+                score_right.metric("Bearish checklist", f"{bear_score}/5")
 
-            chart_df = result["candles"].set_index("time")
-            st.line_chart(chart_df["close"], height=230)
+                st.info(
+                    classify_setup(alignment, bull_score, bear_score)
+                )
 
-            st.caption(
-                "A 5/5 score means all programmed checks passed; "
-                "it does not guarantee a profitable trade."
-            )
+                with st.expander("View checklist details"):
+                    st.write("**Bullish checklist**")
+                    for name, passed in bull_checks.items():
+                        st.write(f"{'✅' if passed else '⬜'} {name}")
+
+                    st.write("**Bearish checklist**")
+                    for name, passed in bear_checks.items():
+                        st.write(f"{'✅' if passed else '⬜'} {name}")
+
+                chart_df = result["df"].tail(100).set_index("open_time")
+                st.line_chart(chart_df[["close", "ema20", "ema50"]])
+
+            except Exception as exc:
+                st.error(
+                    f"Could not scan {symbol}: {exc}. "
+                    "Check the symbol, connection and app logs."
+                )
 
 
-# ==================================================
+# ============================================================
 # MANUAL SETUP VALIDATOR
-# ==================================================
+# ============================================================
 
-with tab_manual:
-    st.subheader("Manual Trade Setup Validator")
-    st.caption("Checklist only. No orders are sent.")
+with validator_tab:
+    st.subheader("Manual SMC setup validator")
+    st.caption("Use this to review your own TradingView analysis.")
 
     with st.form("manual_setup_form"):
-        symbol = st.text_input("Instrument", value="XAUUSD").upper().strip()
-        direction = st.selectbox("Direction", ["Buy", "Sell"])
-
-        entry = st.number_input(
-            "Planned entry price", min_value=0.0, value=1.0,
-            format="%.8f"
-        )
-        stop = st.number_input(
-            "Stop-loss price", min_value=0.0, value=0.9,
-            format="%.8f"
-        )
-        target = st.number_input(
-            "Take-profit price", min_value=0.0, value=1.2,
-            format="%.8f"
-        )
-        account = st.number_input(
-            "Account balance (USD)", min_value=0.0, value=1000.0
-        )
-        risk_pct = st.number_input(
-            "Risk (%)", min_value=0.1, max_value=1.0,
-            value=0.5, step=0.1
+        direction = st.selectbox(
+            "Trade direction",
+            ["Bullish", "Bearish"],
         )
 
-        bias_1h = st.selectbox(
-            "1H bias", ["Bullish", "Bearish", "Neutral"]
+        htf_aligned = st.checkbox(
+            "1H and 15M agree with the setup direction"
         )
-        bias_15m = st.selectbox(
-            "15M bias", ["Bullish", "Bearish", "Neutral"]
+        sweep_seen = st.checkbox(
+            "Liquidity sweep and reclaim/rejection confirmed"
+        )
+        displacement_seen = st.checkbox(
+            "Clear displacement confirmed"
+        )
+        structure_seen = st.checkbox(
+            "Fresh BOS or CHOCH confirmed"
+        )
+        fvg_seen = st.checkbox(
+            "Qualified, unfilled or partially mitigated FVG"
+        )
+        execution_seen = st.checkbox(
+            "5M entry trigger confirmed after retracement"
+        )
+        risk_defined = st.checkbox(
+            "Stop-loss, position size and target defined"
         )
 
-        sweep_ok = st.checkbox("Liquidity sweep identified")
-        displacement_ok = st.checkbox("Displacement confirmed")
-        bos_ok = st.checkbox("BOS/CHOCH confirmed")
-        fvg_ok = st.checkbox("Relevant FVG identified")
-        session_ok = st.checkbox("Valid trading session")
-        submit_setup = st.form_submit_button("Validate setup")
+        submitted = st.form_submit_button("Validate setup")
 
-    if submit_setup:
-        if direction == "Buy":
-            risk_distance = entry - stop
-            reward_distance = target - entry
-            expected_bias = "Bullish"
-        else:
-            risk_distance = stop - entry
-            reward_distance = entry - target
-            expected_bias = "Bearish"
-
-        stop_valid = risk_distance > 0 and reward_distance > 0
-        rr = reward_distance / risk_distance if stop_valid else 0.0
-        risk_amount = account * risk_pct / 100
-
-        checks = {
-            "Correct entry, stop and target placement": stop_valid,
-            "Reward-to-risk at least 1:2": rr >= 2,
-            "Risk at or below 1%": risk_pct <= 1,
-            "Account balance above zero": account > 0,
-            "1H bias aligned": bias_1h == expected_bias,
-            "15M bias aligned": bias_15m == expected_bias,
-            "Liquidity sweep checked": sweep_ok,
-            "Displacement checked": displacement_ok,
-            "BOS/CHOCH checked": bos_ok,
-            "FVG checked": fvg_ok,
-            "Trading session checked": session_ok,
+    if submitted:
+        conditions = {
+            "1H/15M alignment": htf_aligned,
+            "Liquidity sweep": sweep_seen,
+            "Displacement": displacement_seen,
+            "Fresh BOS/CHOCH": structure_seen,
+            "Qualified active FVG": fvg_seen,
+            "5M execution trigger": execution_seen,
+            "Risk plan": risk_defined,
         }
 
-        passed = all(checks.values())
+        passed = sum(conditions.values())
+        st.write(f"Checklist: **{passed}/7**")
 
-        st.write(f"**Risk amount:** ${risk_amount:,.2f}")
-        st.write(f"**Reward-to-risk:** 1:{rr:.2f}")
+        for name, value in conditions.items():
+            st.write(f"{'✅' if value else '⬜'} {name}")
 
-        for label, ok in checks.items():
-            st.write(f"{'✅' if ok else '❌'} {label}")
-
-        if passed:
-            st.success("All checklist conditions passed. Verify the chart.")
-        else:
-            st.warning("Some conditions failed. Reassess before acting.")
-
-        st.session_state.last_setup = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "symbol": symbol,
-            "direction": direction,
-            "entry": entry,
-            "stop_loss": stop,
-            "take_profit": target,
-            "account_balance": account,
-            "risk_pct": risk_pct,
-            "risk_amount": risk_amount,
-            "rr": round(rr, 2),
-            "passed": passed,
-        }
-
-    if st.session_state.last_setup is not None:
-        st.write("**Last validated setup**")
-        st.json(st.session_state.last_setup)
-
-        if st.button("➕ Add setup to paper journal"):
-            st.session_state.journal.append(
-                st.session_state.last_setup.copy()
+        if passed == 7:
+            st.success(
+                "Checklist complete. Independently verify the chart and risk."
             )
-            st.success("Setup added to the paper journal.")
+        else:
+            st.warning(
+                "Setup is incomplete. This checklist is not a trade signal."
+            )
 
 
-# ==================================================
-# PAPER JOURNAL
-# ==================================================
+# ============================================================
+# SESSION PAPER JOURNAL
+# ============================================================
 
-with tab_journal:
-    st.subheader("Paper-Trading Journal")
-    st.caption("Entries are stored for this active app session.")
+if "paper_journal" not in st.session_state:
+    st.session_state.paper_journal = []
 
-    if st.session_state.journal:
-        journal_df = pd.DataFrame(st.session_state.journal)
+with journal_tab:
+    st.subheader("Session-only paper journal")
+    st.caption("Entries are held in this app session, not permanent storage.")
 
+    with st.form("journal_form"):
+        j_symbol = st.text_input("Symbol", value="BTCUSDT").upper().strip()
+        j_direction = st.selectbox("Direction", ["Bullish", "Bearish"])
+
+        j_entry = st.number_input(
+            "Entry price", min_value=0.0, value=0.0, format="%.8f"
+        )
+        j_stop = st.number_input(
+            "Stop-loss price", min_value=0.0, value=0.0, format="%.8f"
+        )
+        j_target = st.number_input(
+            "Target price", min_value=0.0, value=0.0, format="%.8f"
+        )
+
+        j_notes = st.text_area("Setup notes")
+        save_journal = st.form_submit_button("Add paper entry")
+
+    if save_journal:
+        if not j_symbol or j_entry <= 0 or j_stop <= 0 or j_target <= 0:
+            st.error(
+                "Enter a symbol and positive entry, stop-loss and target prices."
+            )
+        else:
+            st.session_state.paper_journal.append({
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "symbol": j_symbol,
+                "direction": j_direction,
+                "entry": j_entry,
+                "stop_loss": j_stop,
+                "target": j_target,
+                "notes": j_notes,
+            })
+            st.success("Added to the session paper journal.")
+
+    if st.session_state.paper_journal:
+        journal_df = pd.DataFrame(st.session_state.paper_journal)
         st.dataframe(journal_df, use_container_width=True)
 
         st.download_button(
-            "Download journal CSV",
+            "Download paper journal CSV",
             data=journal_df.to_csv(index=False).encode("utf-8"),
             file_name="alphax_paper_journal.csv",
             mime="text/csv",
         )
 
-        if st.button("Clear paper journal"):
-            st.session_state.journal = []
+        if st.button("Clear session journal"):
+            st.session_state.paper_journal = []
             st.rerun()
     else:
-        st.info("No journal entries yet.")
+        st.info("No paper entries yet.")
 
 
-# ==================================================
+# ============================================================
 # CSV ANALYSIS
-# ==================================================
+# ============================================================
 
-with tab_csv:
-    st.subheader("Forex and Gold CSV Analysis")
-
+with csv_tab:
+    st.subheader("CSV analysis")
     st.write(
-        "Upload candles with open, high, low and close columns. "
-        "At least 55 valid candles are needed for EMA bias."
+        "Upload a CSV file to inspect its contents and export a cleaned copy."
     )
 
-    uploaded = st.file_uploader("Upload candle CSV", type=["csv"])
+    uploaded_file = st.file_uploader(
+        "Upload CSV",
+        type=["csv"],
+    )
 
-    if uploaded is not None:
+    if uploaded_file is not None:
         try:
-            csv_df = pd.read_csv(uploaded)
-            csv_df.columns = [
-                column.strip().lower() for column in csv_df.columns
-            ]
+            csv_df = pd.read_csv(uploaded_file)
 
-            required = {"open", "high", "low", "close"}
+            st.write(
+                f"Rows: {len(csv_df)} | Columns: {len(csv_df.columns)}"
+            )
+            st.dataframe(csv_df.head(100), use_container_width=True)
 
-            if not required.issubset(csv_df.columns):
-                st.error("CSV must include open, high, low and close.")
-            else:
-                for column in ["open", "high", "low", "close"]:
-                    csv_df[column] = pd.to_numeric(
-                        csv_df[column], errors="coerce"
-                    )
+            cleaned_df = csv_df.drop_duplicates().dropna(how="all")
 
-                csv_df = csv_df.dropna(
-                    subset=["open", "high", "low", "close"]
-                )
+            st.write(
+                "After removing duplicate rows and fully empty rows: "
+                f"{len(cleaned_df)} rows."
+            )
 
-                if len(csv_df) < 55:
-                    st.warning("Upload at least 55 valid candles.")
-                else:
-                    st.metric(
-                        "Latest close",
-                        f"{csv_df['close'].iloc[-1]:,.8g}",
-                    )
-                    st.write(f"EMA bias: **{trend_bias(csv_df)}**")
-                    st.line_chart(csv_df["close"], height=250)
-                    st.write(f"Valid candles: {len(csv_df)}")
-
-                    csv_smc = smc_analysis(csv_df)
-
-                    st.markdown("#### SMC candle analysis")
-                    st.write(f"Liquidity: {csv_smc['sweep']}")
-                    st.write(f"Structure: {csv_smc['structure']}")
-                    st.write(f"FVG: {csv_smc['fvg']}")
-                    st.write(
-                        "Displacement: "
-                        + (
-                            "Present"
-                            if csv_smc["displacement"]
-                            else "Not confirmed"
-                        )
-                    )
+            st.download_button(
+                "Download cleaned CSV",
+                data=cleaned_df.to_csv(index=False).encode("utf-8"),
+                file_name="alphax_cleaned.csv",
+                mime="text/csv",
+            )
 
         except Exception as exc:
-            st.error(f"Could not analyse CSV: {exc}")
+            st.error(f"Could not read this CSV: {exc}")
 
 
-# ==================================================
+# ============================================================
 # FOOTER
-# ==================================================
+# ============================================================
 
 st.divider()
 st.caption(
-    "AlphaX Signal Desk is an educational decision-support tool. "
-    "SMC rules are approximations and require manual confirmation. "
-    "Market data can be delayed or unavailable. Verify prices, risk, "
-    "position sizing and trade conditions independently."
+    f"AlphaX Signal Desk v{APP_VERSION} | "
+    "Educational research and paper trading only. "
+    "No signal is guaranteed."
 )
