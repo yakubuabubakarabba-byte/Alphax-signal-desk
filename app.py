@@ -530,6 +530,73 @@ def detect_fvg(df):
             "status": status,
             "formation_time": third["time"],
             "mitigation_time": mitigation_time,
+# ======================== FAIR VALUE GAP ==============================
+
+def detect_fvg(df):
+    bodies = (df["close"] - df["open"]).abs()
+    candidates = []
+    start = max(2, len(df) - 120)
+
+    for i in range(len(df) - 1, start - 1, -1):
+        first = df.iloc[i - 2]
+        middle = df.iloc[i - 1]
+        third = df.iloc[i]
+
+        baseline = float(bodies.iloc[max(0, i - 11):i - 1].median())
+        middle_body = float(bodies.iloc[i - 1])
+
+        if baseline <= 0 or middle_body < 1.3 * baseline:
+            continue
+
+        if float(third["low"]) > float(first["high"]):
+            direction = "Bullish"
+            lower = float(first["high"])
+            upper = float(third["low"])
+
+        elif float(third["high"]) < float(first["low"]):
+            direction = "Bearish"
+            lower = float(third["high"])
+            upper = float(first["low"])
+
+        else:
+            continue
+
+        status = "Unfilled"
+        mitigation_time = None
+
+        for _, candle in df.iloc[i + 1:].iterrows():
+            lo = float(candle["low"])
+            hi = float(candle["high"])
+
+            if direction == "Bullish":
+                if lo <= lower:
+                    status = "Filled"
+                    mitigation_time = candle["time"]
+                    break
+
+                if lo < upper and status == "Unfilled":
+                    status = "Partially mitigated"
+                    mitigation_time = candle["time"]
+
+            else:
+                if hi >= upper:
+                    status = "Filled"
+                    mitigation_time = candle["time"]
+                    break
+
+                if hi > lower and status == "Unfilled":
+                    status = "Partially mitigated"
+                    mitigation_time = candle["time"]
+
+        candidates.append({
+            "detected": True,
+            "active": status != "Filled",
+            "direction": direction,
+            "lower": lower,
+            "upper": upper,
+            "status": status,
+            "formation_time": third["time"],
+            "mitigation_time": mitigation_time,
             "label": (
                 f"{direction} zone: {price(lower)}–{price(upper)} "
                 f"| {status}"
@@ -552,7 +619,6 @@ def detect_fvg(df):
 
     active = [zone for zone in candidates if zone["active"]]
     return active[0] if active else candidates[0]
-
 
 # ======================== DISPLAY HELPERS ============================
 
