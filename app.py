@@ -496,32 +496,7 @@ def detect_fvg(df):
 
     active = [zone for zone in candidates if zone["active"]]
     return active[0] if active else candidates[0]
-            continue
-
-        status = "Unfilled"
-        mitigation_time = None
-
-        for _, candle in df.iloc[i + 1:].iterrows():
-            lo, hi = float(candle["low"]), float(candle["high"])
-
-            if direction == "Bullish":
-                if lo <= lower:
-                    status = "Filled"
-                    mitigation_time = candle["time"]
-                    break
-                if lo < upper and status == "Unfilled":
-                    status = "Partially mitigated"
-                    mitigation_time = candle["time"]
-            else:
-                if hi >= upper:
-                    status = "Filled"
-                    mitigation_time = candle["time"]
-                    break
-                if hi > lower and status == "Unfilled":
-                    status = "Partially mitigated"
-                    mitigation_time = candle["time"]
-
-        candidates.append({
+            
 # ======================== FAIR VALUE GAP ==============================
 
 def detect_fvg(df):
