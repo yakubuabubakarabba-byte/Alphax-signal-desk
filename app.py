@@ -522,14 +522,6 @@ def detect_fvg(df):
                     mitigation_time = candle["time"]
 
         candidates.append({
-            "detected": True,
-            "active": status != "Filled",
-            "direction": direction,
-            "lower": lower,
-            "upper": upper,
-            "status": status,
-            "formation_time": third["time"],
-            "mitigation_time": mitigation_time,
 # ======================== FAIR VALUE GAP ==============================
 
 def detect_fvg(df):
@@ -619,7 +611,6 @@ def detect_fvg(df):
 
     active = [zone for zone in candidates if zone["active"]]
     return active[0] if active else candidates[0]
-
 # ======================== DISPLAY HELPERS ============================
 
 def show_signal(title, item):
