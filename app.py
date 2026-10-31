@@ -33,11 +33,7 @@ st.info(
 def fetch_candles(symbol, interval, limit=250):
     response = requests.get(
         API,
-        params={
-            "symbol": symbol.upper(),
-            "interval": interval,
-            "limit": limit,
-        },
+        params={"symbol": symbol.upper(), "interval": interval, "limit": limit},
         timeout=15,
         headers={"User-Agent": f"AlphaX/{VERSION}"},
     )
@@ -53,24 +49,14 @@ def fetch_candles(symbol, interval, limit=250):
     if df.empty:
         raise ValueError("No candles returned.")
 
-    for col in [
-        "open", "high", "low", "close", "volume",
-        "open_time", "close_time",
-    ]:
+    for col in ["open", "high", "low", "close", "volume",
+                "open_time", "close_time"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    df = df[
-        df["close_time"] < int(time.time() * 1000)
-    ].copy()
-
-    df["time"] = pd.to_datetime(
-        df["open_time"], unit="ms", utc=True
-    )
-
+    df = df[df["close_time"] < int(time.time() * 1000)].copy()
+    df["time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df = (
-        df.dropna(
-            subset=["time", "open", "high", "low", "close"]
-        )
+        df.dropna(subset=["time", "open", "high", "low", "close"])
         .sort_values("time")
         .drop_duplicates("time")
         .reset_index(drop=True)
@@ -85,14 +71,11 @@ def fetch_candles(symbol, interval, limit=250):
 def fmt_time(value):
     try:
         stamp = pd.Timestamp(value)
-
         if stamp.tzinfo is None:
             stamp = stamp.tz_localize("UTC")
         else:
             stamp = stamp.tz_convert("UTC")
-
         return stamp.strftime("%Y-%m-%d %H:%M UTC")
-
     except Exception:
         return str(value)
 
@@ -103,83 +86,55 @@ def price(value):
 
 def add_emas(df):
     df = df.copy()
-    df["ema20"] = df["close"].ewm(
-        span=20, adjust=False
-    ).mean()
-    df["ema50"] = df["close"].ewm(
-        span=50, adjust=False
-    ).mean()
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
     return df
 
 
 def get_bias(df):
     last = df.iloc[-1]
-
-    if (
-        last["ema20"] > last["ema50"]
-        and last["close"] > last["ema20"]
-    ):
+    if last["ema20"] > last["ema50"] and last["close"] > last["ema20"]:
         return "Bullish"
-
-    if (
-        last["ema20"] < last["ema50"]
-        and last["close"] < last["ema20"]
-    ):
+    if last["ema20"] < last["ema50"] and last["close"] < last["ema20"]:
         return "Bearish"
-
     return "Neutral"
 
 
 # ======================== SWINGS =====================================
 
 def find_swings(df, left=3, right=3):
-    """Return confirmed pivot highs and lows."""
+    """Return confirmed pivot highs/lows. Right-side candles confirm pivots."""
     highs, lows = [], []
 
     for i in range(left, len(df) - right):
-        hw = df["high"].iloc[
-            i - left:i + right + 1
-        ].tolist()
-
-        lw = df["low"].iloc[
-            i - left:i + right + 1
-        ].tolist()
-
+        hw = df["high"].iloc[i-left:i+right+1].tolist()
+        lw = df["low"].iloc[i-left:i+right+1].tolist()
         hi = float(df["high"].iloc[i])
         lo = float(df["low"].iloc[i])
 
         if hi == max(hw) and hw.count(hi) == 1:
             highs.append({
-                "index": i,
-                "price": hi,
-                "time": df["time"].iloc[i],
+                "index": i, "price": hi, "time": df["time"].iloc[i]
             })
 
         if lo == min(lw) and lw.count(lo) == 1:
             lows.append({
-                "index": i,
-                "price": lo,
-                "time": df["time"].iloc[i],
+                "index": i, "price": lo, "time": df["time"].iloc[i]
             })
 
     return highs, lows
 
 
 def is_swing_broken(df, swing, side):
-    """A pivot is broken by a later candle close beyond its price."""
+    """A pivot is broken only by a later candle close beyond its price."""
     later = df.iloc[swing["index"] + 1:]
-
     if later.empty:
         return False
 
     if side == "high":
-        return bool(
-            (later["close"] > swing["price"]).any()
-        )
+        return bool((later["close"] > swing["price"]).any())
 
-    return bool(
-        (later["close"] < swing["price"]).any()
-    )
+    return bool((later["close"] < swing["price"]).any())
 
 
 def latest_swing(df, side):
@@ -193,24 +148,19 @@ def latest_swing(df, side):
     return None
 
 
-# ======================== STRUCTURE ENGINE ===========================
+# ======================== STRUCTURE ENGINE v0.6.0 ====================
 
 def infer_structural_trend(df, left=3, right=3):
     """
     Estimate trend from the last two confirmed swing highs and lows.
-    This is a heuristic, not a definitive SMC interpretation.
+    This is a transparent heuristic, not a definitive SMC interpretation.
     """
-    highs, lows = find_swings(
-        df, left=left, right=right
-    )
+    highs, lows = find_swings(df, left=left, right=right)
 
     if len(highs) < 2 or len(lows) < 2:
         return {
             "trend": "Unknown",
-            "detail": (
-                "Not enough confirmed swing highs and lows "
-                "to infer trend."
-            ),
+            "detail": "Not enough confirmed swing highs and lows to infer trend.",
         }
 
     h1, h2 = highs[-2], highs[-1]
@@ -229,67 +179,43 @@ def infer_structural_trend(df, left=3, right=3):
         trend = "Range/Transition"
 
     detail = (
-        f"Swing highs: {price(h1['price'])} at "
-        f"{fmt_time(h1['time'])} → "
+        f"Swing highs: {price(h1['price'])} at {fmt_time(h1['time'])} → "
         f"{price(h2['price'])} at {fmt_time(h2['time'])}; "
-        f"swing lows: {price(l1['price'])} at "
-        f"{fmt_time(l1['time'])} → "
+        f"swing lows: {price(l1['price'])} at {fmt_time(l1['time'])} → "
         f"{price(l2['price'])} at {fmt_time(l2['time'])}. "
         f"Estimated trend: {trend}."
     )
-
-    return {
-        "trend": trend,
-        "detail": detail,
-    }
+    return {"trend": trend, "detail": detail}
 
 
-def detect_structure_layer(
-    prior, latest, left, right, layer_name
-):
+def detect_structure_layer(prior, latest, left, right, layer_name):
     """
-    Detect a fresh close through an eligible swing level.
+    Find the most recent eligible pivot level crossed by the latest
+    completed candle close. Internal and swing layers use different pivots.
     """
-    highs, lows = find_swings(
-        prior, left=left, right=right
-    )
-
+    highs, lows = find_swings(prior, left=left, right=right)
     if not highs and not lows:
         return None
 
     previous_close = float(prior["close"].iloc[-1])
     latest_close = float(latest["close"])
-
-    trend_info = infer_structural_trend(
-        prior, left=left, right=right
-    )
+    trend_info = infer_structural_trend(prior, left=left, right=right)
     prior_trend = trend_info["trend"]
 
     candidates = []
-
-    for side, swings in (
-        ("high", highs),
-        ("low", lows),
-    ):
+    for side, swings in (("high", highs), ("low", lows)):
         for swing in reversed(swings):
-
+            # Ignore levels that had already been closed through before
+            # the current candle. A fresh event must cross an unbroken level.
             if is_swing_broken(prior, swing, side):
                 continue
 
             level = float(swing["price"])
-
             if side == "high":
-                crossed = (
-                    previous_close <= level
-                    and latest_close > level
-                )
+                crossed = previous_close <= level and latest_close > level
                 direction = "Bullish"
-
             else:
-                crossed = (
-                    previous_close >= level
-                    and latest_close < level
-                )
+                crossed = previous_close >= level and latest_close < level
                 direction = "Bearish"
 
             if crossed:
@@ -308,107 +234,11 @@ def detect_structure_layer(
         candidates,
         key=lambda item: item["swing"]["index"]
     )
-
     direction = event["direction"]
-    level = event["level"]
-    swing = event["swing"]
 
-    if (
-        prior_trend in ("Bullish", "Bearish")
-        and direction != prior_trend
-    ):
+    if prior_trend in ("Bullish", "Bearish") and direction != prior_trend:
         event_type = "CHOCH"
         explanation = (
-            f"Price closed beyond {side if False else event['side']} "
-            f"swing level {price(level)} against the estimated "
-            f"{prior_trend.lower()} trend."
-        )
-
-    elif direction == prior_trend:
-        event_type = "BOS"
-        explanation = (
-            f"Price closed beyond the {event['side']} swing level "
-            f"{price(level)} in the direction of the "
-            f"estimated {prior_trend.lower()} trend."
-        )
-
-    else:
-        event_type = "Structure Break"
-        explanation = (
-            f"Price closed beyond the {event['side']} swing level "
-            f"{price(level)}, but the prior trend is not decisive."
-        )
-
-    return {
-        "detected": True,
-        "direction": direction,
-        "type": event_type,
-        "label": f"{layer_name} {event_type}",
-        "layer": layer_name,
-        "level": level,
-        "pivot_time": swing["time"],
-        "break_time": latest["time"],
-        "detail": explanation,
-    }
-
-
-def detect_structure(df):
-    """
-    Check the latest completed candle against internal and swing levels.
-    """
-    if len(df) < 30:
-        return {
-            "detected": False,
-            "direction": "None",
-            "type": "None",
-            "label": "No fresh BOS/CHOCH",
-            "layer": "None",
-            "detail": "Not enough candles to check structure.",
-        }
-
-    prior = df.iloc[:-1].copy()
-    latest = df.iloc[-1]
-
-    internal_event = detect_structure_layer(
-        prior,
-        latest,
-        left=2,
-        right=2,
-        layer_name="Internal",
-    )
-
-    swing_event = detect_structure_layer(
-        prior,
-        latest,
-        left=3,
-        right=3,
-        layer_name="Swing",
-    )
-
-    event = swing_event or internal_event
-
-    if event is None:
-        trend_info = infer_structural_trend(prior)
-
-        return {
-            "detected": False,
-            "direction": "None",
-            "type": "None",
-            "label": "No fresh BOS/CHOCH",
-            "layer": "None",
-            "detail": (
-                "The latest completed candle did not close "
-                "through an eligible confirmed structure level. "
-                + trend_info["detail"]
-            ),
-        }
-
-    if swing_event and internal_event:
-        event["detail"] += (
-            " An internal structure break was also detected."
-        )
-
-    return event
             f"{direction} break against the inferred prior {prior_trend.lower()} trend."
         )
     elif prior_trend in ("Bullish", "Bearish") and direction == prior_trend:
@@ -422,6 +252,9 @@ def detect_structure(df):
             "The break is confirmed, but the prior trend is not decisive "
             "enough to classify it confidently as BOS or CHOCH."
         )
+
+    swing = event["swing"]
+    level = event["level"]
 
     return {
         "detected": True,
@@ -440,8 +273,6 @@ def detect_structure(df):
             f"Structure layer: {layer_name}. {trend_info['detail']}"
         ),
     }
-
-
 def detect_structure(df):
     """
     Assess fresh internal and swing structure breaks on the latest completed
@@ -609,6 +440,62 @@ def detect_fvg(df):
             direction = "Bearish"
             lower, upper = float(third["high"]), float(first["low"])
         else:
+            continue
+
+        status = "Unfilled"
+        mitigation_time = None
+
+        for _, candle in df.iloc[i + 1:].iterrows():
+            lo, hi = float(candle["low"]), float(candle["high"])
+
+            if direction == "Bullish":
+                if lo <= lower:
+                    status = "Filled"
+                    mitigation_time = candle["time"]
+                    break
+                if lo < upper and status == "Unfilled":
+                    status = "Partially mitigated"
+                    mitigation_time = candle["time"]
+            else:
+                if hi >= upper:
+                    status = "Filled"
+                    mitigation_time = candle["time"]
+                    break
+                if hi > lower and status == "Unfilled":
+                    status = "Partially mitigated"
+                    mitigation_time = candle["time"]
+
+        candidates.append({
+            "detected": True,
+            "active": status != "Filled",
+            "direction": direction,
+            "lower": lower,
+            "upper": upper,
+            "status": status,
+            "formation_time": third["time"],
+            "mitigation_time": mitigation_time,
+            "label": (
+                f"{direction} zone: {price(lower)}–{price(upper)} "
+                f"| {status}"
+            ),
+            "detail": (
+                f"Gap: {price(lower)}–{price(upper)}; formation: "
+                f"{fmt_time(third['time'])}; middle candle body: "
+                f"{price(middle_body)}; prior median: {price(baseline)}."
+            ),
+        })
+
+    if not candidates:
+        return {
+            "detected": False,
+            "active": False,
+            "direction": "None",
+            "label": "No qualified FVG found in recent lookback.",
+            "detail": "No recent three-candle gap passed the body-size filter.",
+        }
+
+    active = [zone for zone in candidates if zone["active"]]
+    return active[0] if active else candidates[0]
             continue
 
         status = "Unfilled"
@@ -1041,6 +928,7 @@ with tabs[3]:
                 )
         except Exception as exc:
             st.error(f"Could not analyse CSV: {exc}")
+
 
 
 # ======================== TAB 5: RISK PLANNER ========================
