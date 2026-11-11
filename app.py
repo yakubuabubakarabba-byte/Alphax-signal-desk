@@ -1743,33 +1743,37 @@ def render_paper_journal():
                 format="%.6f"
             )
 
+        
         with col2:
             stop_loss = st.number_input(
                 "Stop loss",
                 min_value=0.0,
                 value=0.99500,
-                format="%.6f"
+                format="%.6f",
+                key="journal_stop_loss"
             )
 
             take_profit = st.number_input(
                 "Take profit",
                 min_value=0.0,
                 value=1.01000,
-                format="%.6f"
+                format="%.6f",
+                key="journal_take_profit"
             )
 
-           risk_percent = st.number_input(
-    "Risk percentage",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.5,
-    step=0.1,
-    key="journal_risk_percent"
-) 
+            risk_percent = st.number_input(
+                "Risk percentage",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.1,
+                key="journal_risk_percent"
+            )
 
             outcome = st.selectbox(
                 "Trade outcome",
-                ["Win", "Loss", "Breakeven"]
+                ["Win", "Loss", "Breakeven"],
+                key="journal_outcome"
             )
 
         notes = st.text_area(
