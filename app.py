@@ -2471,3 +2471,469 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ============================================================
+# ALPHAX v1.0.0 — SMC INTELLIGENCE ENGINE
+# ============================================================
+
+ALPHAX_INTELLIGENCE_VERSION = "1.0.0"
+
+
+def alphax_smc_intelligence(
+    bias_1h,
+    bias_15m,
+    structure,
+    sweep,
+    displacement,
+    fvg,
+    order_block,
+):
+    """
+    Evaluate SMC confluence across higher and execution
+    timeframes.
+
+    This function provides an explainable screening result.
+    It does not guarantee a trade or execute orders.
+    """
+
+    bullish_points = 0
+    bearish_points = 0
+
+    confirmations = []
+    conflicts = []
+    missing = []
+
+    # --------------------------------------------------------
+    # 1. HIGHER TIMEFRAME ALIGNMENT
+    # --------------------------------------------------------
+
+    if bias_1h == "Bullish":
+        bullish_points += 2
+        confirmations.append("1H bullish directional bias")
+
+    elif bias_1h == "Bearish":
+        bearish_points += 2
+        confirmations.append("1H bearish directional bias")
+
+    else:
+        missing.append("Clear 1H directional bias")
+
+    if bias_15m == "Bullish":
+        bullish_points += 2
+        confirmations.append("15M bullish confirmation")
+
+    elif bias_15m == "Bearish":
+        bearish_points += 2
+        confirmations.append("15M bearish confirmation")
+
+    else:
+        missing.append("Clear 15M directional confirmation")
+
+    # --------------------------------------------------------
+    # 2. STRUCTURE
+    # --------------------------------------------------------
+
+    structure_direction = structure.get(
+        "direction",
+        "Neutral",
+    )
+
+    structure_event = structure.get(
+        "event",
+        "No structure",
+    )
+
+    if structure_direction == "Bullish":
+
+        bullish_points += 2
+
+        confirmations.append(
+            f"Bullish market structure: {structure_event}"
+        )
+
+    elif structure_direction == "Bearish":
+
+        bearish_points += 2
+
+        confirmations.append(
+            f"Bearish market structure: {structure_event}"
+        )
+
+    else:
+        missing.append("Clear 5M market structure")
+
+    # --------------------------------------------------------
+    # 3. LIQUIDITY SWEEP
+    # --------------------------------------------------------
+
+    sweep_direction = sweep.get(
+        "direction",
+        "None",
+    )
+
+    if sweep_direction == "Bullish":
+
+        bullish_points += 2
+
+        confirmations.append(
+            "Bullish liquidity sweep detected"
+        )
+
+    elif sweep_direction == "Bearish":
+
+        bearish_points += 2
+
+        confirmations.append(
+            "Bearish liquidity sweep detected"
+        )
+
+    else:
+        missing.append("Liquidity sweep confirmation")
+
+    # --------------------------------------------------------
+    # 4. DISPLACEMENT
+    # --------------------------------------------------------
+
+    displacement_direction = displacement.get(
+        "direction",
+        "None",
+    )
+
+    if displacement_direction == "Bullish":
+
+        bullish_points += 2
+
+        confirmations.append(
+            "Bullish displacement detected"
+        )
+
+    elif displacement_direction == "Bearish":
+
+        bearish_points += 2
+
+        confirmations.append(
+            "Bearish displacement detected"
+        )
+
+    else:
+        missing.append("Strong directional displacement")
+
+    # --------------------------------------------------------
+    # 5. FAIR VALUE GAP
+    # --------------------------------------------------------
+
+    fvg_direction = fvg.get(
+        "direction",
+        "None",
+    )
+
+    fvg_status = fvg.get(
+        "status",
+        "None",
+    )
+
+    valid_fvg = fvg_status in [
+        "Unmitigated",
+        "Partially mitigated",
+    ]
+
+    if valid_fvg and fvg_direction == "Bullish":
+
+        bullish_points += 1
+
+        confirmations.append(
+            "Valid bullish Fair Value Gap"
+        )
+
+    elif valid_fvg and fvg_direction == "Bearish":
+
+        bearish_points += 1
+
+        confirmations.append(
+            "Valid bearish Fair Value Gap"
+        )
+
+    else:
+        missing.append(
+            "Valid unfilled or partially mitigated FVG"
+        )
+
+    # --------------------------------------------------------
+    # 6. ORDER BLOCK
+    # --------------------------------------------------------
+
+    ob_direction = order_block.get(
+        "direction",
+        "None",
+    )
+
+    ob_status = order_block.get(
+        "status",
+        "None",
+    )
+
+    if ob_status == "Active" and ob_direction == "Bullish":
+
+        bullish_points += 1
+
+        confirmations.append(
+            "Active bullish Order Block"
+        )
+
+    elif ob_status == "Active" and ob_direction == "Bearish":
+
+        bearish_points += 1
+
+        confirmations.append(
+            "Active bearish Order Block"
+        )
+
+    else:
+        missing.append(
+            "Active Order Block confirmation"
+        )
+
+    # --------------------------------------------------------
+    # 7. IDENTIFY CONFLICTS
+    # --------------------------------------------------------
+
+    if (
+        bias_1h != "Neutral"
+        and bias_15m != "Neutral"
+        and bias_1h != bias_15m
+    ):
+        conflicts.append(
+            "1H and 15M directional biases disagree"
+        )
+
+    if (
+        bias_1h != "Neutral"
+        and structure_direction != "Neutral"
+        and bias_1h != structure_direction
+    ):
+        conflicts.append(
+            "5M structure conflicts with 1H bias"
+        )
+
+    if (
+        sweep_direction != "None"
+        and displacement_direction != "None"
+        and sweep_direction != displacement_direction
+    ):
+        conflicts.append(
+            "Liquidity sweep and displacement disagree"
+        )
+
+    # --------------------------------------------------------
+    # 8. FINAL INTELLIGENCE DECISION
+    # --------------------------------------------------------
+
+    signal = "WAIT"
+
+    if (
+        bullish_points >= 7
+        and bullish_points > bearish_points
+        and not conflicts
+    ):
+        signal = "BUY"
+
+    elif (
+        bearish_points >= 7
+        and bearish_points > bullish_points
+        and not conflicts
+    ):
+        signal = "SELL"
+
+    # --------------------------------------------------------
+    # 9. SETUP QUALITY
+    # --------------------------------------------------------
+
+    score_difference = abs(
+        bullish_points - bearish_points
+    )
+
+    if signal == "WAIT":
+
+        quality = "No confirmed setup"
+
+    elif score_difference >= 7:
+
+        quality = "Strong confluence"
+
+    elif score_difference >= 4:
+
+        quality = "Moderate confluence"
+
+    else:
+
+        quality = "Developing confluence"
+
+    # --------------------------------------------------------
+    # 10. EXPLANATION
+    # --------------------------------------------------------
+
+    if signal == "BUY":
+
+        explanation = (
+            "Bullish conditions are aligned. "
+            "Review the 5M entry zone and confirm "
+            "your risk-to-reward before considering execution."
+        )
+
+    elif signal == "SELL":
+
+        explanation = (
+            "Bearish conditions are aligned. "
+            "Review the 5M entry zone and confirm "
+            "your risk-to-reward before considering execution."
+        )
+
+    else:
+
+        explanation = (
+            "The conditions are not sufficiently aligned. "
+            "Wait for additional confirmation."
+        )
+
+    return {
+        "version": ALPHAX_INTELLIGENCE_VERSION,
+
+        "signal": signal,
+
+        "quality": quality,
+
+        "bullish_points": bullish_points,
+
+        "bearish_points": bearish_points,
+
+        "confirmations": confirmations,
+
+        "conflicts": conflicts,
+
+        "missing": missing,
+
+        "explanation": explanation,
+    }
+
+# ============================================================
+# ALPHAX v1.0.0 — SCANNER INTELLIGENCE INTEGRATION
+# ============================================================
+
+# Preserve the existing scanner function
+alphax_original_scan_symbol = scan_symbol
+
+
+def scan_symbol(symbol):
+    """
+    Run the original AlphaX scanner, then attach
+    the SMC Intelligence Engine assessment.
+    """
+
+    result = alphax_original_scan_symbol(symbol)
+
+    # Keep error results safe
+    if not isinstance(result, dict) or result.get("error"):
+        if isinstance(result, dict):
+            result["intelligence"] = {
+                "version": ALPHAX_INTELLIGENCE_VERSION,
+                "signal": "WAIT",
+                "quality": "Scan unavailable",
+                "bullish_points": 0,
+                "bearish_points": 0,
+                "confirmations": [],
+                "conflicts": [],
+                "missing": ["A successful market scan"],
+                "explanation": "Unable to evaluate this market scan."
+            }
+        return result
+
+    # Run the intelligence engine using scanner detections
+    intelligence = alphax_smc_intelligence(
+        bias_1h=result.get("bias_1h", "Neutral"),
+        bias_15m=result.get("bias_15m", "Neutral"),
+        structure=result.get("structure") or {},
+        sweep=result.get("sweep") or {},
+        displacement=result.get("displacement") or {},
+        fvg=result.get("fvg") or {},
+        order_block=result.get("order_block") or {},
+    )
+
+    # Attach intelligence without removing original scanner data
+    result["intelligence"] = intelligence
+
+    return result
+
+
+# Preserve the existing individual analysis display
+alphax_original_individual_analysis = render_individual_analysis
+
+
+def render_individual_analysis(result):
+    """
+    Display the original analysis and add an
+    explainable SMC Intelligence report.
+    """
+
+    alphax_original_individual_analysis(result)
+
+    intelligence = result.get("intelligence", {})
+
+    st.markdown("---")
+    st.subheader("🧠 AlphaX SMC Intelligence")
+    st.caption(
+        f"Intelligence Engine v{intelligence.get('version', '1.0.0')}"
+    )
+
+    signal = intelligence.get("signal", "WAIT")
+    quality = intelligence.get("quality", "Not available")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Intelligence Signal", signal)
+
+    with col2:
+        st.metric("Setup Quality", quality)
+
+    with col3:
+        st.metric(
+            "Bullish / Bearish",
+            f"{intelligence.get('bullish_points', 0)} / "
+            f"{intelligence.get('bearish_points', 0)}"
+        )
+
+    st.info(intelligence.get(
+        "explanation",
+        "Waiting for sufficient market confirmation."
+    ))
+
+    confirmations = intelligence.get("confirmations", [])
+    conflicts = intelligence.get("conflicts", [])
+    missing = intelligence.get("missing", [])
+
+    with st.expander("✅ Confirmed Conditions", expanded=True):
+        if confirmations:
+            for item in confirmations:
+                st.write(f"• {item}")
+        else:
+            st.write("No confirmed conditions yet.")
+
+    with st.expander("⚠️ Conflicting Conditions", expanded=True):
+        if conflicts:
+            for item in conflicts:
+                st.warning(item)
+        else:
+            st.write("No detected directional conflicts.")
+
+    with st.expander("⏳ Conditions Still Needed"):
+        if missing:
+            for item in missing:
+                st.write(f"• {item}")
+        else:
+            st.write("No missing conditions reported.")
+
+    st.caption(
+        "Educational analysis only. The intelligence signal is not "
+        "a guaranteed entry or an instruction to execute a trade."
+    )
+
