@@ -1476,6 +1476,29 @@ def validate_setup(
     risk_percent,
     checklist
 ):
+            if is_valid:
+            risk_distance = abs(entry - stop_loss)
+            reward_distance = abs(take_profit - entry)
+            rr_ratio = reward_distance / risk_distance
+
+            st.success("AlphaX validation passed!")
+
+            st.metric(
+                "Reward-to-Risk Ratio",
+                f"1:{rr_ratio:.2f}"
+            )
+
+            st.info(
+                f"{symbol.upper()} {direction} setup "
+                "meets the AlphaX validation rules. "
+                "Review the chart before considering a trade."
+            )
+
+        else:
+            st.error("Setup validation failed.")
+
+            for error in errors:
+                st.warning(error)
     """
     Validate a manually identified trading setup.
 
