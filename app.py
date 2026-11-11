@@ -1606,13 +1606,14 @@ def render_setup_validator():
             format="%.6f"
         )
 
-        risk_percent = st.number_input(
-            "Risk percentage",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.5,
-            step=0.1
-        )
+       risk_percent = st.number_input(
+    "Risk percentage",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.1,
+    key="validator_risk_percent"
+) 
 
     with col2:
         st.markdown("### AlphaX SMC Checklist")
