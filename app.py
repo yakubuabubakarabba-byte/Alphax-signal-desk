@@ -1564,6 +1564,7 @@ def validate_setup(
     return len(errors) == 0, errors
 
 
+
 def render_setup_validator():
     st.header("AlphaX Setup Validator")
 
@@ -1577,81 +1578,88 @@ def render_setup_validator():
     with col1:
         symbol = st.text_input(
             "Trading pair",
-            value="GBPUSD"
+            value="GBPUSD",
+            key="validator_symbol"
         )
 
         direction = st.selectbox(
             "Trade direction",
-            ["Buy", "Sell"]
+            ["Buy", "Sell"],
+            key="validator_direction"
         )
 
         entry = st.number_input(
             "Entry price",
             min_value=0.0,
             value=1.00000,
-            format="%.6f"
+            format="%.6f",
+            key="validator_entry"
         )
 
         stop_loss = st.number_input(
             "Stop Loss",
             min_value=0.0,
             value=0.99500,
-            format="%.6f"
+            format="%.6f",
+            key="validator_stop_loss"
         )
 
         take_profit = st.number_input(
             "Take Profit",
             min_value=0.0,
             value=1.01000,
-            format="%.6f"
+            format="%.6f",
+            key="validator_take_profit"
         )
 
-       risk_percent = st.number_input(
-    "Risk percentage",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.5,
-    step=0.1,
-    key="validator_risk_percent"
-) 
+        risk_percent = st.number_input(
+            "Risk percentage",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            key="validator_risk_percent"
+        )
 
     with col2:
         st.markdown("### AlphaX SMC Checklist")
 
         checklist = {
             "Higher timeframe bias confirmed": st.checkbox(
-                "1H bias confirmed"
+                "1H bias confirmed",
+                key="validator_1h"
             ),
-
             "15M confirmation": st.checkbox(
-                "15M confirmation"
+                "15M confirmation",
+                key="validator_15m"
             ),
-
             "Liquidity sweep": st.checkbox(
-                "Liquidity sweep identified"
+                "Liquidity sweep identified",
+                key="validator_liquidity"
             ),
-
             "Displacement": st.checkbox(
-                "Displacement confirmed"
+                "Displacement confirmed",
+                key="validator_displacement"
             ),
-
             "BOS or CHoCH": st.checkbox(
-                "BOS / CHoCH confirmed"
+                "BOS / CHoCH confirmed",
+                key="validator_structure"
             ),
-
             "FVG or Order Block": st.checkbox(
-                "FVG / Order Block identified"
+                "FVG / Order Block identified",
+                key="validator_fvg_ob"
             ),
-
             "5M entry confirmation": st.checkbox(
-                "5M entry confirmation"
+                "5M entry confirmation",
+                key="validator_5m"
             ),
         }
 
     if st.button(
         "Validate My Setup",
         type="primary",
-        use_container_width=True
+        use_container_width=True,
+        key="validator_submit"
     ):
 
         is_valid, errors = validate_setup(
@@ -1685,6 +1693,7 @@ def render_setup_validator():
 
             for error in errors:
                 st.write(f"• {error}")
+
 
 
 # -------------------- PAPER TRADING JOURNAL --------------------
