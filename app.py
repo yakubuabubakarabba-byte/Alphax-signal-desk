@@ -1,4 +1,3 @@
-
 import time
 from datetime import datetime
 
@@ -7,212 +6,346 @@ import pandas as pd
 import requests
 import streamlit as st
 
+
+# ============================================================
+# ALPHAX SIGNAL DESK — VERSION 0.9.0
+# ============================================================
+
 VERSION = "0.9.0"
+
 BINANCE_API = "https://data-api.binance.vision/api/v3/klines"
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+]
+
+INTERVALS = [
+    "5m",
+    "15m",
+    "1h",
+]
+
+
+# ============================================================
+# PAGE CONFIGURATION
+# ============================================================
 
 st.set_page_config(
     page_title="AlphaX Signal Desk",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.markdown("""
-<style>
-[data-testid="stMetric"] {
-    background: #101a2b;
-    border: 1px solid #26364f;
-    padding: 12px;
-    border-radius: 12px;
-}
-.small-note {
-    color: #9aa9bf;
-    font-size: .85rem;
-}
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background-color: #080d18;
+        color: #f1f5f9;
+    }
+
+    [data-testid="stMetric"] {
+        background-color: #111827;
+        border: 1px solid #263449;
+        padding: 15px;
+        border-radius: 10px;
+    }
+
+    .main-title {
+        font-size: 32px;
+        font-weight: 800;
+        color: #ffffff;
+    }
+
+    .sub-title {
+        color: #94a3b8;
+        font-size: 14px;
+    }
+
+    .section-title {
+        color: #38bdf8;
+        font-weight: 700;
+        font-size: 20px;
+    }
+
+    div.stButton > button {
+        border-radius: 8px;
+        font-weight: 700;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-# -------------------- MARKET DATA --------------------
+# ============================================================
+# MARKET DATA
+# ============================================================
 
 @st.cache_data(ttl=25, show_spinner=False)
 def fetch_candles(symbol, interval, limit=250):
+    """
+    Fetch public Binance candlestick data.
+
+    This function does not require an API key.
+    """
+
     params = {
         "symbol": symbol.upper(),
         "interval": interval,
-        "limit": int(limit)
+        "limit": limit,
     }
 
     response = requests.get(
         BINANCE_API,
         params=params,
-        timeout=15
+        timeout=15,
     )
+
     response.raise_for_status()
 
-    raw = response.json()
+    raw_data = response.json()
 
-    names = [
-        "open_time", "open", "high", "low", "close",
-        "volume", "close_time", "quote_volume", "trades",
-        "taker_buy_base", "taker_buy_quote", "ignore"
+    if not isinstance(raw_data, list) or not raw_data:
+        raise ValueError("No candle data returned by Binance.")
+
+    columns = [
+        "open_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "close_time",
+        "quote_volume",
+        "trades",
+        "taker_buy_base",
+        "taker_buy_quote",
+        "ignore",
     ]
 
-    df = pd.DataFrame(raw, columns=names)
-
-    if df.empty:
-        raise ValueError(
-            f"No data returned for {symbol} {interval}"
-        )
-
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df["time"] = pd.to_datetime(
-        df["open_time"],
-        unit="ms",
-        utc=True
+    df = pd.DataFrame(
+        raw_data,
+        columns=columns,
     )
 
-    now_ms = int(time.time() * 1000)
-
-    # Exclude the still-forming candle.
-    df = df[df["close_time"].astype("int64") < now_ms]
-
-    return df[
-        ["time", "open", "high", "low", "close", "volume"]
-    ].dropna().reset_index(drop=True)
-
-
-def normalize_ohlcv(df):
-    df = df.copy()
-
-    df.columns = [
-        str(c).strip().lower()
-        for c in df.columns
+    numeric_columns = [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
     ]
 
-    df = df.rename(columns={
-        "timestamp": "time",
-        "date": "time",
-        "datetime": "time",
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+    df["open_time"] = pd.to_datetime(
+        df["open_time"],
+        unit="ms",
+        utc=True,
+    )
+
+    df["close_time"] = pd.to_numeric(
+        df["close_time"],
+        errors="coerce",
+    )
+
+    df = df.dropna(
+        subset=numeric_columns
+    ).copy()
+
+    # Remove the currently forming candle.
+    now_ms = int(time.time() * 1000)
+
+    df = df[
+        df["close_time"] < now_ms
+    ].copy()
+
+    df = df.reset_index(drop=True)
+
+    if len(df) < 20:
+        raise ValueError(
+            "Not enough completed candles returned."
+        )
+
+    return df
+
+
+# ============================================================
+# NORMALIZE IMPORTED OHLCV DATA
+# ============================================================
+
+def normalize_ohlcv(df):
+    """
+    Standardize uploaded candle data.
+
+    Accepted column examples:
+    open, high, low, close, volume
+
+    Also accepts:
+    o, h, l, c, v
+    """
+
+    if df is None or df.empty:
+        raise ValueError("The candle dataset is empty.")
+
+    data = df.copy()
+
+    data.columns = [
+        str(column).strip().lower()
+        for column in data.columns
+    ]
+
+    aliases = {
         "o": "open",
         "h": "high",
         "l": "low",
         "c": "close",
-        "v": "volume"
-    })
+        "v": "volume",
+    }
 
-    required = ["open", "high", "low", "close"]
+    data = data.rename(
+        columns=aliases
+    )
+
+    required = [
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
 
     missing = [
-        c for c in required
-        if c not in df.columns
+        column
+        for column in required
+        if column not in data.columns
     ]
 
     if missing:
         raise ValueError(
-            "CSV must contain open, high, low and close columns."
+            "Missing required columns: "
+            + ", ".join(missing)
         )
 
-    for c in required:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    if "volume" not in data.columns:
+        data["volume"] = 0.0
 
-    if "volume" not in df:
-        df["volume"] = 0.0
-    else:
-        df["volume"] = pd.to_numeric(
-            df["volume"],
-            errors="coerce"
-        ).fillna(0)
-
-    if "time" not in df:
-        df["time"] = range(len(df))
-    else:
-        parsed = pd.to_datetime(
-            df["time"],
+    for column in [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]:
+        data[column] = pd.to_numeric(
+            data[column],
             errors="coerce",
-            utc=True
         )
 
-        df["time"] = (
-            parsed
-            if parsed.notna().any()
-            else range(len(df))
-        )
-
-    df = df.dropna(
+    data = data.dropna(
         subset=required
-    ).reset_index(drop=True)
+    ).copy()
 
-    if len(df) < 10:
+    if len(data) < 10:
         raise ValueError(
             "At least 10 valid candles are required."
         )
 
-    return df[
-        ["time", "open", "high", "low", "close", "volume"]
-    ]
+    return data.reset_index(drop=True)
 
+
+# ============================================================
+# MOVING AVERAGES
+# ============================================================
 
 def add_emas(df):
-    out = df.copy()
+    data = df.copy()
 
-    out["ema20"] = out["close"].ewm(
+    data["EMA20"] = data["close"].ewm(
         span=20,
-        adjust=False
+        adjust=False,
     ).mean()
 
-    out["ema50"] = out["close"].ewm(
+    data["EMA50"] = data["close"].ewm(
         span=50,
-        adjust=False
+        adjust=False,
     ).mean()
 
-    return out
+    return data
 
 
-# -------------------- SMC HELPERS v0.9 --------------------
+# ============================================================
+# SWING HIGH AND SWING LOW DETECTION
+# ============================================================
 
 def find_swings(df, left=3, right=3):
-    """Find confirmed swing highs and lows."""
-    highs = []
-    lows = []
+    """
+    Identify swing highs and swing lows.
 
-    if df is None or len(df) < left + right + 3:
-        return {"highs": highs, "lows": lows}
+    A swing high has a high greater than the surrounding
+    candles. A swing low has a low lower than the surrounding
+    candles.
+    """
 
-    for i in range(left, len(df) - right):
-        high_window = df["high"].iloc[i-left:i+right+1]
-        low_window = df["low"].iloc[i-left:i+right+1]
+    data = df.copy()
 
-        if df["high"].iloc[i] == high_window.max():
-            highs.append({
-                "index": i,
-                "price": float(df["high"].iloc[i])
-            })
+    data["swing_high"] = False
+    data["swing_low"] = False
 
-        if df["low"].iloc[i] == low_window.min():
-            lows.append({
-                "index": i,
-                "price": float(df["low"].iloc[i])
-            })
+    if len(data) < left + right + 3:
+        return data
 
-    return {"highs": highs, "lows": lows}
+    for i in range(left, len(data) - right):
 
+        high_window = data["high"].iloc[
+            i - left:i + right + 1
+        ]
+
+        low_window = data["low"].iloc[
+            i - left:i + right + 1
+        ]
+
+        current_high = data["high"].iloc[i]
+        current_low = data["low"].iloc[i]
+
+        if current_high == high_window.max():
+            data.loc[i, "swing_high"] = True
+
+        if current_low == low_window.min():
+            data.loc[i, "swing_low"] = True
+
+    return data
+
+
+# ============================================================
+# MARKET TREND
+# ============================================================
 
 def _market_trend(swings):
-    """Estimate trend from the latest confirmed swing points."""
-    highs = swings["highs"]
-    lows = swings["lows"]
+    highs = swings[
+        swings["swing_high"]
+    ]["high"].tail(2).tolist()
+
+    lows = swings[
+        swings["swing_low"]
+    ]["low"].tail(2).tolist()
 
     if len(highs) < 2 or len(lows) < 2:
         return "Neutral"
 
-    higher_high = highs[-1]["price"] > highs[-2]["price"]
-    higher_low = lows[-1]["price"] > lows[-2]["price"]
+    higher_high = highs[-1] > highs[-2]
+    higher_low = lows[-1] > lows[-2]
 
-    lower_high = highs[-1]["price"] < highs[-2]["price"]
-    lower_low = lows[-1]["price"] < lows[-2]["price"]
+    lower_high = highs[-1] < highs[-2]
+    lower_low = lows[-1] < lows[-2]
 
     if higher_high and higher_low:
         return "Bullish"
@@ -223,1250 +356,1282 @@ def _market_trend(swings):
     return "Neutral"
 
 
+# ============================================================
+# MARKET STRUCTURE — BOS / CHoCH
+# ============================================================
+
 def detect_structure(df):
-    """Detect a confirmed close beyond a recent swing level."""
-    result = {
-        "detected": False,
-        "direction": "Neutral",
-        "type": "None",
-        "label": "No structure break",
-        "detail": "No confirmed swing break detected.",
-        "trend": "Neutral",
-        "broken_level": None
+    """
+    Basic market structure detection.
+
+    This is a candle-based heuristic. Always confirm the
+    result visually on the chart.
+    """
+
+    data = find_swings(df)
+
+    swing_highs = data[
+        data["swing_high"]
+    ]
+
+    swing_lows = data[
+        data["swing_low"]
+    ]
+
+    if swing_highs.empty or swing_lows.empty:
+        return {
+            "direction": "Neutral",
+            "event": "No structure",
+            "level": None,
+            "trend": "Neutral",
+        }
+
+    last_close = float(
+        data["close"].iloc[-1]
+    )
+
+    previous_high = float(
+        swing_highs["high"].iloc[-1]
+    )
+
+    previous_low = float(
+        swing_lows["low"].iloc[-1]
+    )
+
+    trend = _market_trend(data)
+
+    if last_close > previous_high:
+        direction = "Bullish"
+
+        event = (
+            "BOS"
+            if trend == "Bullish"
+            else "CHoCH"
+        )
+
+        return {
+            "direction": direction,
+            "event": event,
+            "level": previous_high,
+            "trend": trend,
+        }
+
+    if last_close < previous_low:
+        direction = "Bearish"
+
+        event = (
+            "BOS"
+            if trend == "Bearish"
+            else "CHoCH"
+        )
+
+        return {
+            "direction": direction,
+            "event": event,
+            "level": previous_low,
+            "trend": trend,
+        }
+
+    return {
+        "direction": trend,
+        "event": "No confirmed break",
+        "level": None,
+        "trend": trend,
     }
 
-    if df is None or len(df) < 15:
-        return result
 
-    swings = find_swings(df)
-    trend = _market_trend(swings)
-    last_close = float(df["close"].iloc[-1])
-
-    prior_highs = [
-        item for item in swings["highs"]
-        if item["index"] < len(df) - 1
-    ]
-
-    prior_lows = [
-        item for item in swings["lows"]
-        if item["index"] < len(df) - 1
-    ]
-
-    result["trend"] = trend
-
-    if not prior_highs or not prior_lows:
-        return result
-
-    latest_high = prior_highs[-1]["price"]
-    latest_low = prior_lows[-1]["price"]
-
-    if last_close > latest_high:
-        direction = "Bullish"
-        structure_type = (
-            "CHoCH" if trend == "Bearish" else "BOS"
-        )
-
-        result.update({
-            "detected": True,
-            "direction": direction,
-            "type": structure_type,
-            "label": f"Bullish {structure_type}",
-            "detail": (
-                f"Price closed above confirmed swing high "
-                f"{latest_high:.5f}."
-            ),
-            "broken_level": latest_high
-        })
-
-    elif last_close < latest_low:
-        direction = "Bearish"
-        structure_type = (
-            "CHoCH" if trend == "Bullish" else "BOS"
-        )
-
-        result.update({
-            "detected": True,
-            "direction": direction,
-            "type": structure_type,
-            "label": f"Bearish {structure_type}",
-            "detail": (
-                f"Price closed below confirmed swing low "
-                f"{latest_low:.5f}."
-            ),
-            "broken_level": latest_low
-        })
-
-    return result
-
+# ============================================================
+# LIQUIDITY SWEEP
+# ============================================================
 
 def detect_sweep(df):
-    """Detect a wick beyond a confirmed swing followed by a close back inside."""
-    result = {
-        "detected": False,
-        "direction": "Neutral",
+    data = find_swings(df)
+
+    if len(data) < 10:
+        return {
+            "direction": "None",
+            "level": None,
+            "label": "No sweep detected",
+        }
+
+    recent = data.iloc[-1]
+
+    previous_highs = data[
+        data["swing_high"]
+    ]["high"].iloc[:-1]
+
+    previous_lows = data[
+        data["swing_low"]
+    ]["low"].iloc[:-1]
+
+    if not previous_highs.empty:
+        liquidity_high = float(
+            previous_highs.iloc[-1]
+        )
+
+        if (
+            recent["high"] > liquidity_high
+            and recent["close"] < liquidity_high
+        ):
+            return {
+                "direction": "Bearish",
+                "level": liquidity_high,
+                "label": "Buy-side liquidity swept",
+            }
+
+    if not previous_lows.empty:
+        liquidity_low = float(
+            previous_lows.iloc[-1]
+        )
+
+        if (
+            recent["low"] < liquidity_low
+            and recent["close"] > liquidity_low
+        ):
+            return {
+                "direction": "Bullish",
+                "level": liquidity_low,
+                "label": "Sell-side liquidity swept",
+            }
+
+    return {
+        "direction": "None",
         "level": None,
-        "label": "No liquidity sweep",
-        "detail": "No confirmed sweep detected."
+        "label": "No sweep detected",
     }
 
-    if df is None or len(df) < 15:
-        return result
 
-    swings = find_swings(df)
-    last = df.iloc[-1]
-
-    previous_highs = [
-        item for item in swings["highs"]
-        if item["index"] < len(df) - 1
-    ]
-
-    previous_lows = [
-        item for item in swings["lows"]
-        if item["index"] < len(df) - 1
-    ]
-
-    if previous_highs:
-        high_level = previous_highs[-1]["price"]
-
-        if (
-            float(last["high"]) > high_level
-            and float(last["close"]) < high_level
-        ):
-            result.update({
-                "detected": True,
-                "direction": "Bearish",
-                "level": high_level,
-                "label": "Buy-side liquidity swept",
-                "detail": (
-                    f"Price wicked above {high_level:.5f} "
-                    "and closed back below it."
-                )
-            })
-            return result
-
-    if previous_lows:
-        low_level = previous_lows[-1]["price"]
-
-        if (
-            float(last["low"]) < low_level
-            and float(last["close"]) > low_level
-        ):
-            result.update({
-                "detected": True,
-                "direction": "Bullish",
-                "level": low_level,
-                "label": "Sell-side liquidity swept",
-                "detail": (
-                    f"Price wicked below {low_level:.5f} "
-                    "and closed back above it."
-                )
-            })
-
-    return result
-
+# ============================================================
+# DISPLACEMENT
+# ============================================================
 
 def detect_displacement(df):
-    """Identify a strong candle using body size and candle range."""
-    result = {
-        "detected": False,
-        "direction": "Neutral",
-        "label": "No displacement",
-        "detail": "No strong displacement candle detected."
-    }
+    if len(df) < 10:
+        return {
+            "direction": "None",
+            "label": "Insufficient candles",
+            "strength": 0,
+        }
 
-    if df is None or len(df) < 22:
-        return result
-
-    last = df.iloc[-1]
+    candle = df.iloc[-1]
 
     body = abs(
-        float(last["close"]) - float(last["open"])
+        float(candle["close"])
+        - float(candle["open"])
     )
 
-    candle_range = (
-        float(last["high"]) - float(last["low"])
-    )
+    average_body = (
+        df["close"] - df["open"]
+    ).abs().iloc[-11:-1].mean()
 
-    previous = df.iloc[-21:-1]
+    if pd.isna(average_body) or average_body == 0:
+        return {
+            "direction": "None",
+            "label": "No displacement",
+            "strength": 0,
+        }
 
-    previous_bodies = (
-        previous["close"] - previous["open"]
-    ).abs()
+    strength = body / average_body
 
-    average_body = float(previous_bodies.median())
+    if strength >= 1.5:
+        direction = (
+            "Bullish"
+            if candle["close"] > candle["open"]
+            else "Bearish"
+        )
 
-    if candle_range <= 0 or average_body <= 0:
-        return result
+        return {
+            "direction": direction,
+            "label": "Strong displacement",
+            "strength": round(float(strength), 2),
+        }
 
-    body_ratio = body / candle_range
+    return {
+        "direction": "None",
+        "label": "No strong displacement",
+        "strength": round(float(strength), 2),
+    }
 
-    bullish = (
-        float(last["close"]) > float(last["open"])
-        and body >= average_body * 1.5
-        and body_ratio >= 0.65
-        and (
-            float(last["close"]) - float(last["low"])
-        ) / candle_range >= 0.75
-    )
 
-    bearish = (
-        float(last["close"]) < float(last["open"])
-        and body >= average_body * 1.5
-        and body_ratio >= 0.65
-        and (
-            float(last["high"]) - float(last["close"])
-        ) / candle_range >= 0.75
-    )
-
-    if bullish:
-        result.update({
-            "detected": True,
-            "direction": "Bullish",
-            "label": "Bullish displacement",
-            "detail": "Strong bullish candle with a large body."
-        })
-
-    elif bearish:
-        result.update({
-            "detected": True,
-            "direction": "Bearish",
-            "label": "Bearish displacement",
-            "detail": "Strong bearish candle with a large body."
-        })
-
-    return result
-
+# ============================================================
+# FAIR VALUE GAP — FVG
+# ============================================================
 
 def detect_fvg(df, lookback=30):
-    """Find the latest three-candle fair value gap and its mitigation state."""
-    result = {
-        "detected": False,
-        "direction": "Neutral",
-        "low": None,
-        "high": None,
-        "label": "No FVG detected",
+    """
+    Detect a simple three-candle FVG.
+
+    Status:
+    - Unmitigated
+    - Partially mitigated
+    - Filled
+    """
+
+    empty_result = {
+        "direction": "None",
         "status": "None",
-        "detail": "No fair value gap found in the recent candles."
+        "top": None,
+        "bottom": None,
+        "label": "No FVG detected",
     }
 
-    if df is None or len(df) < 3:
-        return result
+    if len(df) < 3:
+        return empty_result
 
-    start = max(0, len(df) - lookback)
-    found = None
+    data = df.tail(lookback).reset_index(drop=True)
 
-    for i in range(start + 2, len(df)):
-        first = df.iloc[i - 2]
-        third = df.iloc[i]
+    for i in range(len(data) - 1, 1, -1):
 
-        # Bullish gap.
-        if float(third["low"]) > float(first["high"]):
-            found = {
-                "index": i,
+        first = data.iloc[i - 2]
+        middle = data.iloc[i - 1]
+        third = data.iloc[i]
+
+        # Bullish FVG
+        if first["high"] < third["low"]:
+
+            bottom = float(first["high"])
+            top = float(third["low"])
+
+            later = data.iloc[i + 1:]
+
+            if later.empty:
+                status = "Unmitigated"
+            elif (later["low"] <= top).any():
+                if (later["low"] <= bottom).any():
+                    status = "Filled"
+                else:
+                    status = "Partially mitigated"
+            else:
+                status = "Unmitigated"
+
+            return {
                 "direction": "Bullish",
-                "low": float(first["high"]),
-                "high": float(third["low"])
+                "status": status,
+                "top": top,
+                "bottom": bottom,
+                "label": f"Bullish FVG ({status})",
             }
 
-        # Bearish gap.
-        elif float(third["high"]) < float(first["low"]):
-            found = {
-                "index": i,
+        # Bearish FVG
+        if first["low"] > third["high"]:
+
+            bottom = float(third["high"])
+            top = float(first["low"])
+
+            later = data.iloc[i + 1:]
+
+            if later.empty:
+                status = "Unmitigated"
+            elif (later["high"] >= bottom).any():
+                if (later["high"] >= top).any():
+                    status = "Filled"
+                else:
+                    status = "Partially mitigated"
+            else:
+                status = "Unmitigated"
+
+            return {
                 "direction": "Bearish",
-                "low": float(third["high"]),
-                "high": float(first["low"])
+                "status": status,
+                "top": top,
+                "bottom": bottom,
+                "label": f"Bearish FVG ({status})",
             }
 
-    if found is None:
-        return result
+    return empty_result
 
-    status = "Unmitigated"
-    later = df.iloc[found["index"] + 1:]
 
-    if found["direction"] == "Bullish":
-        if not later.empty:
-            lowest = float(later["low"].min())
-
-            if lowest <= found["low"]:
-                status = "Filled"
-            elif lowest < found["high"]:
-                status = "Partially mitigated"
-
-    else:
-        if not later.empty:
-            highest = float(later["high"].max())
-
-            if highest >= found["high"]:
-                status = "Filled"
-            elif highest > found["low"]:
-                status = "Partially mitigated"
-
-    result.update({
-        "detected": True,
-        "direction": found["direction"],
-        "low": found["low"],
-        "high": found["high"],
-        "label": f'{found["direction"]} FVG',
-        "status": status,
-        "detail": (
-            f'{found["direction"]} FVG zone: '
-            f'{found["low"]:.5f} – {found["high"]:.5f}. '
-            f"Status: {status}."
-        )
-    })
-
-    return result
-
+# ============================================================
+# ORDER BLOCK DETECTION
+# ============================================================
 
 def detect_order_block(df, lookback=20):
-    """Find the last opposite candle before a strong directional candle."""
-    result = {
-        "detected": False,
-        "direction": "Neutral",
-        "low": None,
-        "high": None,
-        "label": "No order block detected",
+    """
+    Basic order block heuristic.
+
+    Finds the last opposing candle before a strong candle.
+    This is not a substitute for manual chart confirmation.
+    """
+
+    empty_result = {
+        "direction": "None",
         "status": "None",
-        "detail": "No qualifying order block found."
+        "top": None,
+        "bottom": None,
+        "label": "No order block detected",
     }
 
-    if df is None or len(df) < 5:
-        return result
+    if len(df) < 5:
+        return empty_result
 
-    start = max(1, len(df) - lookback)
+    data = df.tail(lookback).reset_index(drop=True)
 
-    for i in range(len(df) - 1, start - 1, -1):
-        candle = df.iloc[i]
+    for i in range(len(data) - 1, 1, -1):
+
+        previous = data.iloc[i - 1]
+        current = data.iloc[i]
 
         body = abs(
-            float(candle["close"]) - float(candle["open"])
+            current["close"] - current["open"]
         )
 
-        previous = df.iloc[max(0, i - 20):i]
-
-        if previous.empty:
-            continue
-
-        average_body = float(
-            (previous["close"] - previous["open"]).abs().median()
+        candle_range = (
+            current["high"] - current["low"]
         )
 
-        if average_body <= 0 or body < average_body * 1.5:
+        if candle_range <= 0:
             continue
 
-        direction = None
+        body_ratio = body / candle_range
 
-        if float(candle["close"]) > float(candle["open"]):
-            direction = "Bullish"
-
-        elif float(candle["close"]) < float(candle["open"]):
-            direction = "Bearish"
-
-        if direction is None:
+        if body_ratio < 0.65:
             continue
 
-        for j in range(i - 1, max(0, i - 6), -1):
-            candidate = df.iloc[j]
+        # Bullish displacement after bearish candle
+        if (
+            current["close"] > current["open"]
+            and previous["close"] < previous["open"]
+        ):
+            return {
+                "direction": "Bullish",
+                "status": "Active",
+                "top": float(previous["high"]),
+                "bottom": float(previous["low"]),
+                "label": "Bullish Order Block",
+            }
 
-            opposite = (
-                direction == "Bullish"
-                and float(candidate["close"]) < float(candidate["open"])
-            ) or (
-                direction == "Bearish"
-                and float(candidate["close"]) > float(candidate["open"])
-            )
+        # Bearish displacement after bullish candle
+        if (
+            current["close"] < current["open"]
+            and previous["close"] > previous["open"]
+        ):
+            return {
+                "direction": "Bearish",
+                "status": "Active",
+                "top": float(previous["high"]),
+                "bottom": float(previous["low"]),
+                "label": "Bearish Order Block",
+            }
 
-            if not opposite:
-                continue
+    return empty_result
 
-            zone_low = float(candidate["low"])
-            zone_high = float(candidate["high"])
-            later = df.iloc[i + 1:]
 
-            invalidated = False
-
-            if not later.empty:
-                if direction == "Bullish":
-                    invalidated = (
-                        float(later["close"].min()) < zone_low
-                    )
-                else:
-                    invalidated = (
-                        float(later["close"].max()) > zone_high
-                    )
-
-            status = (
-                "Invalidated" if invalidated else "Active"
-            )
-
-            result.update({
-                "detected": True,
-                "direction": direction,
-                "low": zone_low,
-                "high": zone_high,
-                "label": f"{direction} order block",
-                "status": status,
-                "detail": (
-                    f"{direction} order block zone: "
-                    f"{zone_low:.5f} – {zone_high:.5f}. "
-                    f"Status: {status}."
-                )
-            })
-
-            return result
-
-    return result
-
+# ============================================================
+# HIGHER TIMEFRAME BIAS
+# ============================================================
 
 def timeframe_bias(df):
-    """Determine directional bias using EMA20 and EMA50."""
     if df is None or len(df) < 50:
         return "Neutral"
 
-    data = df.copy()
-
-    data["ema20"] = data["close"].ewm(
-        span=20,
-        adjust=False
-    ).mean()
-
-    data["ema50"] = data["close"].ewm(
-        span=50,
-        adjust=False
-    ).mean()
+    data = add_emas(df)
 
     last = data.iloc[-1]
 
     if (
-        last["ema20"] > last["ema50"]
-        and last["close"] > last["ema20"]
+        last["close"] > last["EMA20"]
+        and last["EMA20"] > last["EMA50"]
     ):
         return "Bullish"
 
     if (
-        last["ema20"] < last["ema50"]
-        and last["close"] < last["ema20"]
+        last["close"] < last["EMA20"]
+        and last["EMA20"] < last["EMA50"]
     ):
         return "Bearish"
 
     return "Neutral"
 
 
-# PART 1 ENDS HERE.
-# Continue with PART 2 immediately below this line.
-
-# -------------------- COMPLETE MARKET SCANNER --------------------
+# ============================================================
+# END OF PART 1
+# PART 2 CONTINUES WITH scan_symbol()
+# ============================================================
+# ============================================================
+# SCAN SYMBOL — COMPLETE ALPHAX SMC ANALYSIS
+# ============================================================
 
 def scan_symbol(symbol):
     """
-    Scan one trading symbol using:
-    - 1H and 15M higher-timeframe bias
-    - 5M market structure
-    - Liquidity sweep
-    - Displacement
-    - Fair Value Gap
-    - Order Block
+    Scan one trading pair using:
 
-    Educational scanner only.
+    1H  = Higher timeframe bias
+    15M = Confirmation timeframe
+    5M  = Execution timeframe
+
+    The scanner is educational and signal-only.
     It does not execute trades.
     """
 
     try:
-        # -------------------- FETCH MARKET DATA --------------------
+        # ----------------------------------------------------
+        # FETCH MARKET DATA
+        # ----------------------------------------------------
 
-        df5 = fetch_candles(symbol, "5m", 250)
-        df15 = fetch_candles(symbol, "15m", 250)
-        df1h = fetch_candles(symbol, "1h", 250)
-
-        if df5 is None or df5.empty:
-            raise ValueError("Unable to retrieve 5M candle data.")
-
-        if df15 is None or df15.empty:
-            raise ValueError("Unable to retrieve 15M candle data.")
-
-        if df1h is None or df1h.empty:
-            raise ValueError("Unable to retrieve 1H candle data.")
-
-        # -------------------- ADD EMA DATA --------------------
-
-        df5 = add_emas(df5)
-        df15 = add_emas(df15)
-        df1h = add_emas(df1h)
-
-        # -------------------- HIGHER TIMEFRAME BIAS --------------------
-
-        bias_1h = timeframe_bias(df1h)
-        bias_15m = timeframe_bias(df15)
-        bias_5m = timeframe_bias(df5)
-
-        # -------------------- MARKET STRUCTURE --------------------
-
-        structure_1h = detect_structure(df1h)
-        structure_15m = detect_structure(df15)
-        structure_5m = detect_structure(df5)
-
-        structure_label = structure_5m.get(
-            "label", "No clear structure"
+        df_5m = fetch_candles(
+            symbol,
+            "5m",
+            limit=250,
         )
 
-        structure_direction = structure_5m.get(
-            "direction", "Neutral"
+        df_15m = fetch_candles(
+            symbol,
+            "15m",
+            limit=250,
         )
 
-        structure_type = structure_5m.get(
-            "type", "None"
+        df_1h = fetch_candles(
+            symbol,
+            "1h",
+            limit=250,
         )
 
-        # -------------------- LIQUIDITY ANALYSIS --------------------
+        # ----------------------------------------------------
+        # CALCULATE HIGHER TIMEFRAME BIAS
+        # ----------------------------------------------------
 
-        liquidity = detect_sweep(df5)
+        bias_1h = timeframe_bias(df_1h)
+        bias_15m = timeframe_bias(df_15m)
 
-        liquidity_label = liquidity.get(
-            "label", "No liquidity sweep"
-        )
+        # ----------------------------------------------------
+        # ANALYSE 5M EXECUTION TIMEFRAME
+        # ----------------------------------------------------
 
-        liquidity_direction = liquidity.get(
-            "direction", "Neutral"
-        )
+        structure = detect_structure(df_5m)
 
-        # -------------------- DISPLACEMENT ANALYSIS --------------------
+        sweep = detect_sweep(df_5m)
 
-        displacement = detect_displacement(df5)
+        displacement = detect_displacement(df_5m)
 
-        displacement_label = displacement.get(
-            "label", "No displacement"
-        )
+        fvg = detect_fvg(df_5m)
 
-        displacement_direction = displacement.get(
-            "direction", "Neutral"
-        )
+        order_block = detect_order_block(df_5m)
 
-        # -------------------- FAIR VALUE GAP --------------------
-
-        fvg = detect_fvg(df5)
-
-        fvg_label = fvg.get(
-            "label", "No FVG detected"
-        )
-
-        fvg_direction = fvg.get(
-            "direction", "Neutral"
-        )
-
-        # -------------------- ORDER BLOCK --------------------
-
-        order_block = detect_order_block(df5)
-
-        order_block_label = order_block.get(
-            "label", "No active Order Block"
-        )
-
-        order_block_direction = order_block.get(
-            "direction", "Neutral"
-        )
-
-        # -------------------- SCORING SYSTEM --------------------
+        # ----------------------------------------------------
+        # INITIALIZE SCORES
+        # ----------------------------------------------------
 
         bullish_score = 0
         bearish_score = 0
 
         reasons = []
 
-        # 1H bias: maximum 2 points
+        # ----------------------------------------------------
+        # HIGHER TIMEFRAME ALIGNMENT
+        # Maximum 2 points
+        # ----------------------------------------------------
+
         if bias_1h == "Bullish":
-            bullish_score += 2
-            reasons.append("1H bias is bullish (+2)")
+            bullish_score += 1
+            reasons.append("1H bullish bias (+1)")
 
         elif bias_1h == "Bearish":
-            bearish_score += 2
-            reasons.append("1H bias is bearish (+2)")
+            bearish_score += 1
+            reasons.append("1H bearish bias (+1)")
 
-        # 15M bias: maximum 2 points
         if bias_15m == "Bullish":
-            bullish_score += 2
-            reasons.append("15M bias is bullish (+2)")
+            bullish_score += 1
+            reasons.append("15M bullish bias (+1)")
 
         elif bias_15m == "Bearish":
-            bearish_score += 2
-            reasons.append("15M bias is bearish (+2)")
-
-        # 5M market structure: maximum 2 points
-        if structure_direction == "Bullish":
-            bullish_score += 2
-            reasons.append(
-                f"5M structure: {structure_label} (+2)"
-            )
-
-        elif structure_direction == "Bearish":
-            bearish_score += 2
-            reasons.append(
-                f"5M structure: {structure_label} (+2)"
-            )
-
-        # Liquidity sweep: maximum 2 points
-        if liquidity_direction == "Bullish":
-            bullish_score += 2
-            reasons.append(
-                f"Bullish liquidity event: {liquidity_label} (+2)"
-            )
-
-        elif liquidity_direction == "Bearish":
-            bearish_score += 2
-            reasons.append(
-                f"Bearish liquidity event: {liquidity_label} (+2)"
-            )
-
-        # Displacement: maximum 1 point
-        if displacement_direction == "Bullish":
-            bullish_score += 1
-            reasons.append(
-                f"Bullish displacement: {displacement_label} (+1)"
-            )
-
-        elif displacement_direction == "Bearish":
             bearish_score += 1
+            reasons.append("15M bearish bias (+1)")
+
+        # ----------------------------------------------------
+        # MARKET STRUCTURE
+        # Maximum 2 points
+        # ----------------------------------------------------
+
+        if structure["direction"] == "Bullish":
+
+            bullish_score += 1
+
             reasons.append(
-                f"Bearish displacement: {displacement_label} (+1)"
+                f"Bullish structure: {structure['event']} (+1)"
             )
 
-        # FVG: maximum 1 point
-        if fvg_direction == "Bullish":
+            if structure["event"] == "BOS":
+                bullish_score += 1
+                reasons.append("Bullish BOS confirmation (+1)")
+
+        elif structure["direction"] == "Bearish":
+
+            bearish_score += 1
+
+            reasons.append(
+                f"Bearish structure: {structure['event']} (+1)"
+            )
+
+            if structure["event"] == "BOS":
+                bearish_score += 1
+                reasons.append("Bearish BOS confirmation (+1)")
+
+        # ----------------------------------------------------
+        # LIQUIDITY SWEEP
+        # Maximum 1 point
+        # ----------------------------------------------------
+
+        if sweep["direction"] == "Bullish":
+
             bullish_score += 1
+
+            reasons.append(
+                f"Bullish liquidity sweep: {sweep['label']} (+1)"
+            )
+
+        elif sweep["direction"] == "Bearish":
+
+            bearish_score += 1
+
+            reasons.append(
+                f"Bearish liquidity sweep: {sweep['label']} (+1)"
+            )
+
+        # ----------------------------------------------------
+        # DISPLACEMENT
+        # Maximum 1 point
+        # ----------------------------------------------------
+
+        if displacement["direction"] == "Bullish":
+
+            bullish_score += 1
+
+            reasons.append(
+                "Bullish displacement (+1)"
+            )
+
+        elif displacement["direction"] == "Bearish":
+
+            bearish_score += 1
+
+            reasons.append(
+                "Bearish displacement (+1)"
+            )
+
+        # ----------------------------------------------------
+        # FAIR VALUE GAP
+        # Maximum 1 point
+        # Only unfilled or partially mitigated FVGs count.
+        # ----------------------------------------------------
+
+        fvg_direction = fvg.get("direction")
+
+        fvg_label = fvg.get(
+            "label",
+            "FVG",
+        )
+
+        if (
+            fvg_direction == "Bullish"
+            and fvg.get("status") in (
+                "Unmitigated",
+                "Partially mitigated",
+            )
+        ):
+
+            bullish_score += 1
+
             reasons.append(
                 f"Bullish FVG: {fvg_label} (+1)"
             )
 
-        elif fvg_direction == "Bearish":
+        elif (
+            fvg_direction == "Bearish"
+            and fvg.get("status") in (
+                "Unmitigated",
+                "Partially mitigated",
+            )
+        ):
+
             bearish_score += 1
+
             reasons.append(
                 f"Bearish FVG: {fvg_label} (+1)"
             )
 
-        # Active Order Block: maximum 1 point
-        if order_block_direction == "Bullish":
+        # ----------------------------------------------------
+        # ORDER BLOCK
+        # Maximum 1 point
+        # Only active order blocks count.
+        # ----------------------------------------------------
+
+        order_block_direction = order_block.get(
+            "direction"
+        )
+
+        order_block_label = order_block.get(
+            "label",
+            "Order Block",
+        )
+
+        if (
+            order_block_direction == "Bullish"
+            and order_block.get("status") == "Active"
+        ):
+
             bullish_score += 1
+
             reasons.append(
                 f"Bullish Order Block: {order_block_label} (+1)"
             )
 
-        elif order_block_direction == "Bearish":
+        elif (
+            order_block_direction == "Bearish"
+            and order_block.get("status") == "Active"
+        ):
+
             bearish_score += 1
+
             reasons.append(
                 f"Bearish Order Block: {order_block_label} (+1)"
             )
 
-        # -------------------- FINAL DIRECTION --------------------
+        # ----------------------------------------------------
+        # FINAL SIGNAL
+        # ----------------------------------------------------
 
-        score_difference = bullish_score - bearish_score
+        signal = "WAIT"
 
-        direction = "Neutral"
-        signal = "No clear setup"
+        if (
+            bullish_score >= 5
+            and bullish_score > bearish_score
+        ):
 
-        if bullish_score >= 5 and score_difference >= 2:
-            direction = "Bullish"
-            signal = "Potential BUY setup"
+            signal = "BUY"
 
-        elif bearish_score >= 5 and score_difference <= -2:
-            direction = "Bearish"
-            signal = "Potential SELL setup"
+        elif (
+            bearish_score >= 5
+            and bearish_score > bullish_score
+        ):
+
+            signal = "SELL"
+
+        # ----------------------------------------------------
+        # CONFIDENCE LABEL
+        # ----------------------------------------------------
+
+        score_difference = abs(
+            bullish_score - bearish_score
+        )
+
+        if signal == "WAIT":
+            confidence = "Low"
+
+        elif score_difference >= 5:
+            confidence = "High"
+
+        elif score_difference >= 3:
+            confidence = "Medium"
 
         else:
-            reasons.append(
-                "The scanner conditions are not strong enough "
-                "to identify a directional setup."
-            )
+            confidence = "Low"
 
-        # -------------------- CURRENT PRICE --------------------
+        # ----------------------------------------------------
+        # CURRENT MARKET PRICE
+        # ----------------------------------------------------
 
-        current_price = float(df5["close"].iloc[-1])
+        current_price = float(
+            df_5m["close"].iloc[-1]
+        )
 
-        # -------------------- SCAN RESULT --------------------
-
-        result = {
-            "symbol": symbol,
-            "price": current_price,
-
-            # Timeframe biases
-            "bias_1h": bias_1h,
-            "bias_15m": bias_15m,
-            "bias_5m": bias_5m,
-
-            # Market structure
-            "structure_1h": structure_1h,
-            "structure_15m": structure_15m,
-            "structure_5m": structure_5m,
-
-            "structure_label": structure_label,
-            "structure_direction": structure_direction,
-            "structure_type": structure_type,
-
-            # Liquidity
-            "liquidity": liquidity,
-            "liquidity_label": liquidity_label,
-            "liquidity_direction": liquidity_direction,
-
-            # Displacement
-            "displacement": displacement,
-            "displacement_label": displacement_label,
-            "displacement_direction": displacement_direction,
-
-            # Fair Value Gap
-            "fvg": fvg,
-            "fvg_label": fvg_label,
-            "fvg_direction": fvg_direction,
-
-            # Order Block
-            "order_block": order_block,
-            "order_block_label": order_block_label,
-            "order_block_direction": order_block_direction,
-
-            # Scores
-            "bullish_score": bullish_score,
-            "bearish_score": bearish_score,
-            "score_difference": score_difference,
-
-            # Final scanner output
-            "direction": direction,
-            "signal": signal,
-            "reasons": reasons,
-
-            # Chart data
-            "chart": df5,
-
-            # Compatibility fields
-            "1H bias": bias_1h,
-            "15M bias": bias_15m,
-            "5M structure": structure_label,
-            "Liquidity": liquidity_label,
-            "Displacement": displacement_label,
-            "FVG": fvg_label,
-        }
-
-        return result
-
-    except Exception as e:
+        # ----------------------------------------------------
+        # PREPARE RETURN RESULT
+        # ----------------------------------------------------
 
         return {
             "symbol": symbol,
-            "price": None,
 
-            "signal": "Scan error",
-            "direction": "Neutral",
+            "signal": signal,
 
-            "error": str(e),
-            "reasons": [],
+            "confidence": confidence,
+
+            "current_price": current_price,
+
+            "bias_1h": bias_1h,
+
+            "bias_15m": bias_15m,
+
+            "structure": structure,
+
+            "sweep": sweep,
+
+            "displacement": displacement,
+
+            "fvg": fvg,
+
+            "order_block": order_block,
+
+            "bullish_score": bullish_score,
+
+            "bearish_score": bearish_score,
+
+            "reasons": reasons,
+
+            "df_5m": add_emas(df_5m),
+
+            "df_15m": add_emas(df_15m),
+
+            "df_1h": add_emas(df_1h),
+
+            "scan_time": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+
+            "error": None,
+        }
+
+    except Exception as error:
+
+        return {
+            "symbol": symbol,
+
+            "signal": "ERROR",
+
+            "confidence": "Unavailable",
+
+            "current_price": None,
+
+            "bias_1h": "Neutral",
+
+            "bias_15m": "Neutral",
+
+            "structure": {},
+
+            "sweep": {},
+
+            "displacement": {},
+
+            "fvg": {},
+
+            "order_block": {},
 
             "bullish_score": 0,
-            "bearish_score": 0,
-            "score_difference": 0,
 
-            "chart": None,
+            "bearish_score": 0,
+
+            "reasons": [],
+
+            "df_5m": pd.DataFrame(),
+
+            "df_15m": pd.DataFrame(),
+
+            "df_1h": pd.DataFrame(),
+
+            "scan_time": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+
+            "error": str(error),
         }
 
 
-# -------------------- PART 2 ENDS HERE --------------------
-# Continue with PART 3 immediately below this line.
-
-# -------------------- DASHBOARD AND MARKET SCANNER UI -------------------
-
+# ============================================================
+# END OF PART 2
+# PART 3 CONTINUES WITH THE DASHBOARD AND MARKET SCANNER
+# ============================================================
+# ============================================================
+# DISPLAY SMC DETAILS
+# ============================================================
 
 def display_smc_detail(title, data, fallback_label):
-    """
-    Display one SMC component safely.
-    """
-
     st.markdown(f"**{title}**")
 
-    if not isinstance(data, dict):
-        st.info(fallback_label)
+    if not data:
+        st.caption(fallback_label)
         return
 
-    label = data.get("label", fallback_label)
-    direction = data.get("direction", "Neutral")
+    label = data.get(
+        "label",
+        data.get("event", fallback_label),
+    )
 
-    st.write(f"Finding: {label}")
-    st.write(f"Direction: {direction}")
+    direction = data.get(
+        "direction",
+        "None",
+    )
 
-    # Display any additional useful fields returned
-    # by the detection function.
-    ignored_keys = {"label", "direction"}
+    status = data.get(
+        "status",
+        "",
+    )
 
-    for key, value in data.items():
-        if key not in ignored_keys:
-            readable_key = key.replace("_", " ").title()
+    st.write(f"**Finding:** {label}")
 
-            if isinstance(value, dict):
-                st.write(f"{readable_key}:")
-                st.json(value)
+    st.write(f"**Direction:** {direction}")
 
-            elif isinstance(value, (list, tuple)):
-                st.write(f"{readable_key}: {value}")
+    if status:
+        st.write(f"**Status:** {status}")
 
-            else:
-                st.write(f"{readable_key}: {value}")
+    level = data.get("level")
 
+    if level is not None:
+        st.write(
+            f"**Liquidity level:** {level:,.4f}"
+        )
+
+    top = data.get("top")
+    bottom = data.get("bottom")
+
+    if top is not None and bottom is not None:
+        st.write(
+            f"**Zone:** {bottom:,.4f} – {top:,.4f}"
+        )
+
+    strength = data.get("strength")
+
+    if strength is not None:
+        st.write(
+            f"**Strength:** {strength}x average candle body"
+        )
+
+
+# ============================================================
+# INDIVIDUAL MARKET ANALYSIS
+# ============================================================
 
 def render_individual_analysis(result):
-    """
-    Corrected detailed analysis for an individual market.
-    """
 
-    symbol = result.get("symbol", "Unknown market")
+    if not result:
+        st.info("Select a market to view its analysis.")
+        return
 
-    st.subheader(f"Individual Market Analysis — {symbol}")
-
-    # -------------------- HANDLE SCAN ERRORS --------------------
-
-    if result.get("signal") == "Scan error":
+    if result.get("error"):
         st.error(
-            result.get("error", "An unknown scanning error occurred.")
+            f"{result['symbol']}: {result['error']}"
         )
         return
 
-    # -------------------- PRICE AND SIGNAL --------------------
+    st.markdown(
+        f"## {result['symbol']} — Detailed Analysis"
+    )
 
-    price = result.get("price")
+    col1, col2, col3, col4 = st.columns(4)
 
-    if price is not None:
+    with col1:
         st.metric(
             "Current Price",
-            f"{price:,.6f}"
-        )
-
-    signal = result.get("signal", "No clear setup")
-    direction = result.get("direction", "Neutral")
-
-    if direction == "Bullish":
-        st.success(f"Scanner Result: {signal}")
-
-    elif direction == "Bearish":
-        st.error(f"Scanner Result: {signal}")
-
-    else:
-        st.warning(f"Scanner Result: {signal}")
-
-    # -------------------- TIMEFRAME BIAS --------------------
-
-    st.markdown("### Higher-Timeframe Analysis")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "1H Bias",
-        result.get("bias_1h", "Unknown")
-    )
-
-    col2.metric(
-        "15M Bias",
-        result.get("bias_15m", "Unknown")
-    )
-
-    col3.metric(
-        "5M Bias",
-        result.get("bias_5m", "Unknown")
-    )
-
-    # -------------------- MARKET STRUCTURE --------------------
-
-    st.markdown("### Market Structure")
-
-    structure_1h = result.get("structure_1h", {})
-    structure_15m = result.get("structure_15m", {})
-    structure_5m = result.get("structure_5m", {})
-
-    structure_col1, structure_col2, structure_col3 = st.columns(3)
-
-    with structure_col1:
-        display_smc_detail(
-            "1H Structure",
-            structure_1h,
-            "No 1H structure information."
-        )
-
-    with structure_col2:
-        display_smc_detail(
-            "15M Structure",
-            structure_15m,
-            "No 15M structure information."
-        )
-
-    with structure_col3:
-        display_smc_detail(
-            "5M Structure",
-            structure_5m,
-            "No 5M structure information."
-        )
-
-    # -------------------- LIQUIDITY AND DISPLACEMENT --------------------
-
-    st.markdown("### Liquidity and Displacement")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        display_smc_detail(
-            "Liquidity Analysis",
-            result.get("liquidity", {}),
-            result.get("liquidity_label", "No liquidity data.")
+            f"{result['current_price']:,.4f}",
         )
 
     with col2:
-        display_smc_detail(
-            "Displacement Analysis",
-            result.get("displacement", {}),
-            result.get("displacement_label", "No displacement data.")
+        st.metric(
+            "Signal",
+            result["signal"],
         )
 
-    # -------------------- FVG AND ORDER BLOCK --------------------
+    with col3:
+        st.metric(
+            "Bullish Score",
+            result["bullish_score"],
+        )
 
-    st.markdown("### Imbalance and Institutional Zones")
+    with col4:
+        st.metric(
+            "Bearish Score",
+            result["bearish_score"],
+        )
+
+    st.caption(
+        f"Confidence: {result['confidence']} | "
+        f"Scanned: {result['scan_time']}"
+    )
+
+    st.markdown("### Higher Timeframe Bias")
 
     col1, col2 = st.columns(2)
 
     with col1:
+        st.metric(
+            "1H Bias",
+            result["bias_1h"],
+        )
+
+    with col2:
+        st.metric(
+            "15M Bias",
+            result["bias_15m"],
+        )
+
+    st.markdown("### Smart Money Concepts")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        display_smc_detail(
+            "Market Structure",
+            result["structure"],
+            "No structure available",
+        )
+
+        display_smc_detail(
+            "Liquidity Sweep",
+            result["sweep"],
+            "No liquidity sweep available",
+        )
+
+        display_smc_detail(
+            "Displacement",
+            result["displacement"],
+            "No displacement available",
+        )
+
+    with col2:
         display_smc_detail(
             "Fair Value Gap",
-            result.get("fvg", {}),
-            result.get("fvg_label", "No FVG data.")
+            result["fvg"],
+            "No FVG available",
         )
 
-    with col2:
         display_smc_detail(
             "Order Block",
-            result.get("order_block", {}),
-            result.get("order_block_label", "No Order Block data.")
+            result["order_block"],
+            "No Order Block available",
         )
 
-    # -------------------- SCANNER SCORE --------------------
+    st.markdown("### Score Explanation")
 
-    st.markdown("### AlphaX Scanner Score")
-
-    bullish_score = result.get("bullish_score", 0)
-    bearish_score = result.get("bearish_score", 0)
-
-    score_col1, score_col2, score_col3 = st.columns(3)
-
-    score_col1.metric(
-        "Bullish Score",
-        f"{bullish_score}/11"
-    )
-
-    score_col2.metric(
-        "Bearish Score",
-        f"{bearish_score}/11"
-    )
-
-    score_col3.metric(
-        "Score Difference",
-        f"{result.get('score_difference', 0):+}"
-    )
-
-    # -------------------- REASONS --------------------
-
-    st.markdown("### Reasons Behind the Scanner Result")
-
-    reasons = result.get("reasons", [])
-
-    if reasons:
-        for reason in reasons:
+    if result["reasons"]:
+        for reason in result["reasons"]:
             st.write(f"• {reason}")
     else:
-        st.info("No scanner reasons were returned.")
+        st.info(
+            "No directional confirmations were detected."
+        )
 
-    # -------------------- CHART --------------------
-    chart_data = result.get("chart")
+    st.caption(
+        "SMC detections are automated heuristics. "
+        "Confirm every finding manually on your chart."
+    )
 
-    if chart_data is not None:
-        show_chart(chart_data, symbol)
+    st.markdown("### 5M Execution Chart")
+
+    show_chart(
+        result["df_5m"],
+        result["symbol"],
+    )
+
+
+# ============================================================
+# CANDLESTICK CHART
+# ============================================================
 
 def show_chart(df, symbol):
-    """
-    Display a 5M candlestick chart with EMA20 and EMA50.
-    """
 
     if df is None or df.empty:
-        st.warning("No chart data is available.")
+        st.warning("No chart data available.")
         return
 
-    chart_df = df.copy()
+    chart_data = df.copy()
 
-    # Match the column names returned by the market scanner.
-    chart_df = chart_df.rename(columns={
-        "time": "timestamp",
-        "ema20": "ema_20",
-        "ema50": "ema_50"
-    })
-
-    required_columns = [
-        "timestamp", "open", "high", "low", "close"
-    ]
-
-    if not all(
-        column in chart_df.columns
-        for column in required_columns
-    ):
-        st.warning("Chart data is missing required columns.")
-        return
-
-    chart_df["timestamp"] = pd.to_datetime(
-        chart_df["timestamp"],
-        errors="coerce",
-        utc=True
+    chart_data["candle_index"] = range(
+        len(chart_data)
     )
 
-    chart_df = chart_df.dropna(
-        subset=["timestamp", "open", "high", "low", "close"]
-    )
-
-    if chart_df.empty:
-        st.warning("No valid candle data found.")
-        return
-
-    chart_df["direction"] = chart_df.apply(
+    chart_data["color"] = chart_data.apply(
         lambda row: (
             "Bullish"
             if row["close"] >= row["open"]
             else "Bearish"
         ),
-        axis=1
+        axis=1,
     )
 
-    candle = alt.Chart(chart_df).encode(
+    candles = alt.Chart(
+        chart_data
+    ).encode(
         x=alt.X(
-            "timestamp:T",
-            title="Time",
-            axis=alt.Axis(format="%H:%M")
+            "candle_index:Q",
+            title="Candles",
+            axis=alt.Axis(
+                labelAngle=0,
+            ),
         ),
         color=alt.Color(
-            "direction:N",
+            "color:N",
             scale=alt.Scale(
                 domain=["Bullish", "Bearish"],
-                range=["#00C853", "#FF1744"]
+                range=["#16a34a", "#ef4444"],
             ),
-            legend=None
-        )
+            legend=None,
+        ),
+        tooltip=[
+            alt.Tooltip(
+                "open:Q",
+                format=",.4f",
+            ),
+            alt.Tooltip(
+                "high:Q",
+                format=",.4f",
+            ),
+            alt.Tooltip(
+                "low:Q",
+                format=",.4f",
+            ),
+            alt.Tooltip(
+                "close:Q",
+                format=",.4f",
+            ),
+        ],
     )
 
-    wicks = candle.mark_rule().encode(
-        y=alt.Y("low:Q", title="Price"),
-        y2="high:Q"
+    wicks = candles.mark_rule(
+        strokeWidth=1.2,
+    ).encode(
+        y=alt.Y(
+            "low:Q",
+            title="Price",
+        ),
+        y2="high:Q",
     )
 
-    bodies = candle.mark_bar(size=7).encode(
+    bodies = candles.mark_bar(
+        size=7,
+    ).encode(
         y="open:Q",
-        y2="close:Q"
+        y2="close:Q",
     )
 
-    chart_layers = [wicks, bodies]
-
-    if "ema_20" in chart_df.columns:
-        ema20 = alt.Chart(chart_df).mark_line(
-            color="#2196F3",
-            strokeWidth=1.5
-        ).encode(
-            x="timestamp:T",
-            y=alt.Y("ema_20:Q", title="Price")
-        )
-
-        chart_layers.append(ema20)
-
-    if "ema_50" in chart_df.columns:
-        ema50 = alt.Chart(chart_df).mark_line(
-            color="#FFC107",
-            strokeWidth=1.5
-        ).encode(
-            x="timestamp:T",
-            y=alt.Y("ema_50:Q", title="Price")
-        )
-
-        chart_layers.append(ema50)
-
-    final_chart = alt.layer(
-        *chart_layers
+    candle_chart = (
+        wicks + bodies
     ).properties(
-        title=f"{symbol} — 5M Candlestick Chart",
-        height=420
+        height=420,
+        title=f"{symbol} — 5 Minute Candles",
+    )
+
+    ema_lines = alt.Chart(
+        chart_data
+    ).transform_fold(
+        ["EMA20", "EMA50"],
+        as_=["EMA", "Price"],
+    ).mark_line(
+        strokeWidth=1.5,
+    ).encode(
+        x="candle_index:Q",
+        y="Price:Q",
+        color=alt.Color(
+            "EMA:N",
+            scale=alt.Scale(
+                domain=["EMA20", "EMA50"],
+                range=["#38bdf8", "#f59e0b"],
+            ),
+        ),
+        tooltip=[
+            "EMA:N",
+            alt.Tooltip(
+                "Price:Q",
+                format=",.4f",
+            ),
+        ],
+    )
+
+    final_chart = (
+        candle_chart + ema_lines
     ).interactive()
 
     st.altair_chart(
         final_chart,
-        use_container_width=True
+        use_container_width=True,
     )
+
+
+# ============================================================
+# MARKET SCANNER
+# ============================================================
+
 def render_market_scanner():
-    # -------------------- SCANNER CONTROLS --------------------
+
+    st.markdown(
+        '<p class="section-title">Market Scanner</p>',
+        unsafe_allow_html=True,
+    )
+
+    st.write(
+        "Scan the watchlist using the AlphaX SMC "
+        "and Price Action framework."
+    )
+
+    st.caption(
+        "1H bias • 15M confirmation • 5M execution"
+    )
+
+    # --------------------------------------------------------
+    # SCANNER CONTROLS
+    # --------------------------------------------------------
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
         selected_symbols = st.multiselect(
-            "Select markets to scan",
+            "Select markets",
             options=SYMBOLS,
-            default=SYMBOLS
+            default=SYMBOLS,
+            key="scanner_symbols",
         )
 
     with col2:
         refresh_interval = st.selectbox(
             "Refresh interval",
-            options=[30, 60, 120, 300],
+            options=[
+                30,
+                60,
+                120,
+                300,
+            ],
             index=1,
-            format_func=lambda x: f"{x} seconds"
+            format_func=lambda x: f"{x} seconds",
+            key="scanner_refresh",
         )
 
-    scan_button = st.button(
-        "Run AlphaX Scan",
-        type="primary",
-        use_container_width=True
+    st.caption(
+        f"Configured refresh interval: "
+        f"{refresh_interval} seconds. "
+        "This setting does not automatically refresh "
+        "the page; use the scan button to fetch new data."
     )
 
-    if "alphax_scan_results" not in st.session_state:
-        st.session_state.alphax_scan_results = []
+    # --------------------------------------------------------
+    # SCAN BUTTON
+    # --------------------------------------------------------
 
-    if "alphax_last_scan" not in st.session_state:
-        st.session_state.alphax_last_scan = None
+    if st.button(
+        "🔍 Scan Selected Markets",
+        type="primary",
+        use_container_width=True,
+        key="run_market_scan",
+    ):
 
-    if scan_button:
         if not selected_symbols:
-            st.warning("Select at least one market to scan.")
+            st.warning(
+                "Select at least one market."
+            )
 
         else:
+
             scan_results = []
 
             progress = st.progress(0)
-            status = st.empty()
 
-            for index, symbol in enumerate(selected_symbols):
+            status_text = st.empty()
 
-                status.write(
+            for index, symbol in enumerate(
+                selected_symbols
+            ):
+
+                status_text.write(
                     f"Scanning {symbol}..."
                 )
 
                 result = scan_symbol(symbol)
+
                 scan_results.append(result)
 
                 progress.progress(
                     (index + 1) / len(selected_symbols)
                 )
 
-            st.session_state.alphax_scan_results = scan_results
-            st.session_state.alphax_last_scan = datetime.now()
+            st.session_state["scan_results"] = (
+                scan_results
+            )
 
-            status.success("Market scan completed.")
+            status_text.success(
+                "Market scan completed."
+            )
 
-    # -------------------- DISPLAY LAST SCAN --------------------
+            progress.empty()
 
-    results = st.session_state.alphax_scan_results
+    # --------------------------------------------------------
+    # DISPLAY SCAN RESULTS
+    # --------------------------------------------------------
+
+    results = st.session_state.get(
+        "scan_results",
+        [],
+    )
 
     if not results:
         st.info(
-            "No scan results yet. Select your markets and "
-            "tap Run AlphaX Scan."
+            "No scan results yet. "
+            "Select your markets and press Scan."
         )
         return
 
-    if st.session_state.alphax_last_scan:
-        st.caption(
-            "Last scan: "
-            + st.session_state.alphax_last_scan.strftime(
-                "%d %b %Y, %H:%M:%S"
-            )
-        )
+    st.markdown("### Scan Summary")
 
-    # -------------------- SUMMARY TABLE --------------------
-
-    st.markdown("### Market Scan Summary")
-
-    display_rows = []
+    summary_rows = []
 
     for result in results:
 
-        if result.get("signal") == "Scan error":
-            display_rows.append({
-                "Market": result.get("symbol", "Unknown"),
-                "Price": "Unavailable",
-                "1H Bias": "Unknown",
-                "15M Bias": "Unknown",
-                "5M Bias": "Unknown",
-                "Bullish": "—",
-                "Bearish": "—",
-                "Signal": "Scan error",
-            })
-            continue
-
-        price = result.get("price")
-
-        display_rows.append({
-            "Market": result.get("symbol", "Unknown"),
-            "Price": (
-                round(price, 6)
-                if price is not None else "Unavailable"
-            ),
-            "1H Bias": result.get("bias_1h", "Unknown"),
-            "15M Bias": result.get("bias_15m", "Unknown"),
-            "5M Bias": result.get("bias_5m", "Unknown"),
-            "Bullish": (
-                f"{result.get('bullish_score', 0)}/11"
-            ),
-            "Bearish": (
-                f"{result.get('bearish_score', 0)}/11"
-            ),
-            "Signal": result.get("signal", "Unknown"),
+        summary_rows.append({
+            "Market": result["symbol"],
+            "Signal": result["signal"],
+            "Confidence": result["confidence"],
+            "1H Bias": result["bias_1h"],
+            "15M Bias": result["bias_15m"],
+            "Bullish Score": result["bullish_score"],
+            "Bearish Score": result["bearish_score"],
+            "Price": result["current_price"],
+            "Error": result["error"] or "",
         })
 
-    summary_df = pd.DataFrame(display_rows)
+    summary_df = pd.DataFrame(
+        summary_rows
+    )
 
     st.dataframe(
         summary_df,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
-    # -------------------- INDIVIDUAL MARKET DETAILS --------------------
+    # --------------------------------------------------------
+    # INDIVIDUAL MARKET SELECTOR
+    # --------------------------------------------------------
 
-    st.markdown("### Detailed Market Results")
-
-    available_symbols = [
-        result.get("symbol")
+    valid_results = [
+        result
         for result in results
-        if result.get("symbol")
+        if not result.get("error")
     ]
 
-    if available_symbols:
-
-        selected_analysis = st.selectbox(
-            "Choose a market for detailed analysis",
-            options=available_symbols
+    if not valid_results:
+        st.error(
+            "No successful scans. Check your internet "
+            "connection and Binance data availability."
         )
+        return
 
-        selected_result = next(
-            (
-                result for result in results
-                if result.get("symbol") == selected_analysis
-            ),
-            None
-        )
-
-        if selected_result:
-            render_individual_analysis(selected_result)
-
-    # -------------------- REFRESH INFORMATION --------------------
-
-    st.divider()
-
-    st.caption(
-        f"Configured refresh interval: {refresh_interval} seconds. "
-        "Use Run AlphaX Scan to request a fresh scan."
+    selected_market = st.selectbox(
+        "Choose a market for detailed analysis",
+        options=[
+            result["symbol"]
+            for result in valid_results
+        ],
+        key="detailed_market_select",
     )
 
-    st.warning(
-        "This scanner is for educational analysis and paper trading. "
-        "It does not guarantee profitable signals or execute trades."
+    selected_result = next(
+        (
+            result
+            for result in valid_results
+            if result["symbol"] == selected_market
+        ),
+        None,
+    )
+
+    render_individual_analysis(
+        selected_result
     )
 
 
-# -------------------- PART 3 ENDS HERE --------------------
-# Continue with PART 4 immediately below this line.
-
-# -------------------- SETUP VALIDATOR --------------------
+# ============================================================
+# END OF PART 3
+# PART 4 CONTINUES WITH:
+# SETUP VALIDATOR, RISK PLANNER, PAPER JOURNAL,
+# CSV ANALYSIS AND MAIN APPLICATION
+# ============================================================
+# ============================================================
+# SETUP VALIDATOR — CORRECTED VERSION
+# ============================================================
 
 def validate_setup(
     direction,
@@ -1474,40 +1639,18 @@ def validate_setup(
     stop_loss,
     take_profit,
     risk_percent,
-    checklist
+    checklist,
 ):
-            if is_valid:
-            risk_distance = abs(entry - stop_loss)
-            reward_distance = abs(take_profit - entry)
-            rr_ratio = reward_distance / risk_distance
-
-            st.success("AlphaX validation passed!")
-
-            st.metric(
-                "Reward-to-Risk Ratio",
-                f"1:{rr_ratio:.2f}"
-            )
-
-            st.info(
-                f"{symbol.upper()} {direction} setup "
-                "meets the AlphaX validation rules. "
-                "Review the chart before considering a trade."
-            )
-
-        else:
-            st.error("Setup validation failed.")
-
-            for error in errors:
-                st.warning(error)
     """
-    Validate a manually identified trading setup.
+    Validate a manually entered AlphaX trade setup.
 
-    Rules:
-    - Risk must be above 0% and not exceed 1%.
-    - Buy: stop loss below entry and take profit above entry.
-    - Sell: stop loss above entry and take profit below entry.
-    - Minimum reward-to-risk ratio is 1:2.
-    - All SMC checklist items must be confirmed.
+    Requirements:
+    - Valid entry, stop loss and take profit.
+    - Stop loss on the correct side of entry.
+    - Take profit on the correct side of entry.
+    - Minimum 1:2 reward-to-risk.
+    - Risk must be above zero and no more than 1%.
+    - Required SMC checklist items must be confirmed.
     """
 
     errors = []
@@ -1519,32 +1662,46 @@ def validate_setup(
         risk_percent = float(risk_percent)
 
     except (TypeError, ValueError):
-        return False, ["Enter valid numeric prices and risk percentage."]
+        return False, ["Enter valid numerical prices and risk."]
 
     if entry <= 0 or stop_loss <= 0 or take_profit <= 0:
-        errors.append("Entry, stop loss and take profit must be above zero.")
+        errors.append("Prices must be greater than zero.")
 
-    if not 0 < risk_percent <= 1:
-        errors.append("Risk must be above 0% and must not exceed 1%.")
+    if risk_percent <= 0:
+        errors.append("Risk percentage must be greater than zero.")
 
-    if direction == "Buy":
+    if risk_percent > 1:
+        errors.append("Maximum permitted risk is 1%.")
+
+    if direction == "BUY":
+
         if stop_loss >= entry:
-            errors.append("For a Buy setup, stop loss must be below entry.")
+            errors.append(
+                "For a BUY setup, stop loss must be below entry."
+            )
 
         if take_profit <= entry:
-            errors.append("For a Buy setup, take profit must be above entry.")
+            errors.append(
+                "For a BUY setup, take profit must be above entry."
+            )
 
-    elif direction == "Sell":
+    elif direction == "SELL":
+
         if stop_loss <= entry:
-            errors.append("For a Sell setup, stop loss must be above entry.")
+            errors.append(
+                "For a SELL setup, stop loss must be above entry."
+            )
 
         if take_profit >= entry:
-            errors.append("For a Sell setup, take profit must be below entry.")
+            errors.append(
+                "For a SELL setup, take profit must be below entry."
+            )
 
     else:
-        errors.append("Select Buy or Sell.")
+        errors.append("Select BUY or SELL direction.")
 
     if not errors:
+
         risk_distance = abs(entry - stop_loss)
         reward_distance = abs(take_profit - entry)
 
@@ -1556,120 +1713,165 @@ def validate_setup(
 
             if rr_ratio < 2:
                 errors.append(
-                    f"Reward-to-risk is {rr_ratio:.2f}:1. "
-                    "Minimum required is 2:1."
+                    f"Reward-to-risk is 1:{rr_ratio:.2f}. "
+                    "AlphaX requires at least 1:2."
                 )
 
-    if not all(checklist.values()):
-        missing = [
-            name for name, checked in checklist.items()
+    if not isinstance(checklist, dict):
+        errors.append("Invalid checklist data.")
+
+    else:
+        unchecked = [
+            item
+            for item, checked in checklist.items()
             if not checked
         ]
 
-        errors.append(
-            "Confirm all SMC checklist items: "
-            + ", ".join(missing)
-        )
+        if unchecked:
+            errors.append(
+                "Complete the checklist: "
+                + ", ".join(unchecked)
+            )
 
     return len(errors) == 0, errors
 
 
+# ============================================================
+# SETUP VALIDATOR INTERFACE
+# ============================================================
 
 def render_setup_validator():
-    st.header("AlphaX Setup Validator")
+
+    st.markdown(
+        '<p class="section-title">Setup Validator</p>',
+        unsafe_allow_html=True,
+    )
 
     st.write(
-        "Manually enter your trading idea and validate it "
-        "against the AlphaX SMC and risk-management rules."
+        "Enter your proposed trade and confirm your "
+        "AlphaX SMC conditions before considering execution."
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
-        symbol = st.text_input(
+
+        symbol = st.selectbox(
             "Trading pair",
-            value="GBPUSD",
-            key="validator_symbol"
+            options=[
+                "BTCUSDT",
+                "ETHUSDT",
+                "SOLUSDT",
+                "EURUSD",
+                "GBPUSD",
+                "GBPJPY",
+                "XAUUSD",
+                "Other",
+            ],
+            key="validator_symbol",
         )
 
         direction = st.selectbox(
             "Trade direction",
-            ["Buy", "Sell"],
-            key="validator_direction"
+            options=["BUY", "SELL"],
+            key="validator_direction",
         )
 
         entry = st.number_input(
             "Entry price",
             min_value=0.0,
-            value=1.00000,
-            format="%.6f",
-            key="validator_entry"
+            value=0.0,
+            format="%.8f",
+            key="validator_entry",
         )
 
         stop_loss = st.number_input(
-            "Stop Loss",
+            "Stop-loss price",
             min_value=0.0,
-            value=0.99500,
-            format="%.6f",
-            key="validator_stop_loss"
+            value=0.0,
+            format="%.8f",
+            key="validator_stop",
         )
 
+    with col2:
+
         take_profit = st.number_input(
-            "Take Profit",
+            "Take-profit price",
             min_value=0.0,
-            value=1.01000,
-            format="%.6f",
-            key="validator_take_profit"
+            value=0.0,
+            format="%.8f",
+            key="validator_target",
         )
 
         risk_percent = st.number_input(
             "Risk percentage",
-            min_value=0.0,
+            min_value=0.1,
             max_value=1.0,
             value=0.5,
             step=0.1,
-            key="validator_risk_percent"
+            key="validator_risk",
+        )
+
+    st.markdown("### AlphaX SMC Checklist")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        htf = st.checkbox(
+            "1H higher-timeframe bias identified",
+            key="check_htf",
+        )
+
+        fifteen_min = st.checkbox(
+            "15M confirmation completed",
+            key="check_15m",
+        )
+
+        liquidity = st.checkbox(
+            "Liquidity sweep identified",
+            key="check_liquidity",
+        )
+
+        displacement = st.checkbox(
+            "Strong displacement confirmed",
+            key="check_displacement",
         )
 
     with col2:
-        st.markdown("### AlphaX SMC Checklist")
 
-        checklist = {
-            "Higher timeframe bias confirmed": st.checkbox(
-                "1H bias confirmed",
-                key="validator_1h"
-            ),
-            "15M confirmation": st.checkbox(
-                "15M confirmation",
-                key="validator_15m"
-            ),
-            "Liquidity sweep": st.checkbox(
-                "Liquidity sweep identified",
-                key="validator_liquidity"
-            ),
-            "Displacement": st.checkbox(
-                "Displacement confirmed",
-                key="validator_displacement"
-            ),
-            "BOS or CHoCH": st.checkbox(
-                "BOS / CHoCH confirmed",
-                key="validator_structure"
-            ),
-            "FVG or Order Block": st.checkbox(
-                "FVG / Order Block identified",
-                key="validator_fvg_ob"
-            ),
-            "5M entry confirmation": st.checkbox(
-                "5M entry confirmation",
-                key="validator_5m"
-            ),
-        }
+        structure = st.checkbox(
+            "BOS or CHoCH confirmed",
+            key="check_structure",
+        )
+
+        zone = st.checkbox(
+            "Valid FVG or Order Block identified",
+            key="check_zone",
+        )
+
+        five_min = st.checkbox(
+            "5M entry confirmation completed",
+            key="check_5m",
+        )
+
+    checklist = {
+        "1H higher-timeframe bias": htf,
+        "15M confirmation": fifteen_min,
+        "Liquidity sweep": liquidity,
+        "Displacement": displacement,
+        "BOS or CHoCH": structure,
+        "FVG or Order Block": zone,
+        "5M entry confirmation": five_min,
+    }
+
+    st.markdown("---")
 
     if st.button(
-        "Validate My Setup",
+        "Validate AlphaX Setup",
         type="primary",
         use_container_width=True,
-        key="validator_submit"
+        key="validate_setup_button",
     ):
 
         is_valid, errors = validate_setup(
@@ -1678,576 +1880,594 @@ def render_setup_validator():
             stop_loss,
             take_profit,
             risk_percent,
-            checklist
+            checklist,
         )
 
+        if is_valid:
+
+            risk_distance = abs(entry - stop_loss)
+            reward_distance = abs(take_profit - entry)
+
+            rr_ratio = reward_distance / risk_distance
+
+            st.success("AlphaX validation passed!")
+
+            st.metric(
+                "Reward-to-Risk Ratio",
+                f"1:{rr_ratio:.2f}",
+            )
+
+            st.info(
+                f"{symbol.upper()} {direction} setup meets "
+                "the AlphaX validation rules. "
+                "Review the chart before considering a trade."
+            )
+
+        else:
+
+            st.error("Setup validation failed.")
+
+            for error in errors:
+                st.warning(error)
+
+
+# ============================================================
+# RISK PLANNER — SINGLE VERSION
+# ============================================================
 
 def render_risk_planner():
-    st.header("AlphaX Risk Management Planner")
+
+    st.markdown(
+        '<p class="section-title">Risk Planner</p>',
+        unsafe_allow_html=True,
+    )
 
     st.write(
-        "Calculate the monetary risk for a hypothetical trade."
+        "Calculate the amount of account capital at risk "
+        "before planning a trade."
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
+
         account_balance = st.number_input(
             "Account balance",
             min_value=0.0,
-            value=50000.0,
-            step=1000.0,
-            key="planner_account_balance"
+            value=1000.0,
+            step=100.0,
+            key="risk_planner_balance",
         )
 
         risk_percent = st.number_input(
             "Risk percentage",
-            min_value=0.0,
+            min_value=0.1,
             max_value=1.0,
             value=0.5,
             step=0.1,
-            key="planner_risk_percent"
+            key="risk_planner_percent",
         )
 
     with col2:
+
         entry = st.number_input(
             "Entry price",
             min_value=0.0,
-            value=1.10000,
-            format="%.6f",
-            key="planner_entry"
+            value=0.0,
+            format="%.8f",
+            key="risk_planner_entry",
         )
 
         stop_loss = st.number_input(
             "Stop-loss price",
             min_value=0.0,
-            value=1.09500,
-            format="%.6f",
-            key="planner_stop_loss"
+            value=0.0,
+            format="%.8f",
+            key="risk_planner_stop",
         )
 
-    if account_balance > 0 and risk_percent > 0:
-        risk_amount = (
-            account_balance * risk_percent / 100
-        )
+    if st.button(
+        "Calculate Risk",
+        type="primary",
+        use_container_width=True,
+        key="risk_planner_calculate",
+    ):
 
-        st.markdown("### Risk Summary")
+        if account_balance <= 0:
+            st.error("Enter a valid account balance.")
 
-        col1, col2 = st.columns(2)
+        elif entry <= 0 or stop_loss <= 0:
+            st.error("Enter valid entry and stop-loss prices.")
 
-        col1.metric(
-            "Maximum Planned Risk",
-            f"₦{risk_amount:,.2f}"
-        )
+        elif entry == stop_loss:
+            st.error("Entry and stop loss cannot be equal.")
 
-        col2.metric(
-            "Risk Percentage",
-            f"{risk_percent:.2f}%"
-        )
+        else:
 
-        if entry > 0 and stop_loss > 0:
-            stop_distance = abs(entry - stop_loss)
-
-            st.metric(
-                "Stop-Loss Distance",
-                f"{stop_distance:.6f}"
+            risk_amount = (
+                account_balance * risk_percent / 100
             )
 
-        st.caption(
-            "This planner calculates monetary risk only. "
-            "It does not calculate broker-specific lot size, "
-            "pip value, contract size, spread or commission."
-        )
+            price_distance = abs(
+                entry - stop_loss
+            )
 
-    else:
-        st.info(
-            "Enter an account balance and valid risk percentage."
-        )
+            percentage_distance = (
+                price_distance / entry
+            ) * 100
+
+            st.markdown("### Risk Calculation")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Money at Risk",
+                    f"{risk_amount:,.2f}",
+                )
+
+            with col2:
+                st.metric(
+                    "Price Distance",
+                    f"{price_distance:.8f}",
+                )
+
+            with col3:
+                st.metric(
+                    "Stop Distance",
+                    f"{percentage_distance:.3f}%",
+                )
+
+            st.info(
+                f"You are risking {risk_percent:.2f}% "
+                f"of your account, equal to "
+                f"{risk_amount:,.2f}."
+            )
+
+            st.caption(
+                "This calculator estimates monetary risk only. "
+                "It does not calculate Forex lots, contract size, "
+                "pip value, commissions or slippage."
+            )
 
 
-
-
-# -------------------- PAPER TRADING JOURNAL --------------------
+# ============================================================
+# PAPER JOURNAL
+# ============================================================
 
 def render_paper_journal():
-    st.header("AlphaX Paper Trading Journal")
+
+    st.markdown(
+        '<p class="section-title">Paper Trading Journal</p>',
+        unsafe_allow_html=True,
+    )
 
     st.write(
-        "Record hypothetical trades and review your trading discipline. "
-        "No live orders are placed."
+        "Record manually approved practice setups and "
+        "track their outcomes. No live orders are placed."
     )
 
     if "paper_trades" not in st.session_state:
-        st.session_state.paper_trades = []
+        st.session_state["paper_trades"] = []
 
     with st.form("paper_trade_form"):
 
         col1, col2 = st.columns(2)
 
         with col1:
-            trade_date = st.date_input(
-                "Trade date",
-                value=datetime.now().date()
-            )
 
-            symbol = st.text_input(
-                "Trading pair",
-                value="GBPUSD"
+            symbol = st.selectbox(
+                "Market",
+                options=[
+                    "BTCUSDT",
+                    "ETHUSDT",
+                    "SOLUSDT",
+                    "EURUSD",
+                    "GBPUSD",
+                    "GBPJPY",
+                    "XAUUSD",
+                ],
+                key="journal_symbol",
             )
 
             direction = st.selectbox(
                 "Direction",
-                ["Buy", "Sell"]
+                options=["BUY", "SELL"],
+                key="journal_direction",
             )
 
             entry = st.number_input(
                 "Entry price",
                 min_value=0.0,
-                value=1.00000,
-                format="%.6f"
+                value=0.0,
+                format="%.8f",
+                key="journal_entry",
             )
+
+        with col2:
 
             exit_price = st.number_input(
                 "Exit price",
                 min_value=0.0,
-                value=1.00200,
-                format="%.6f"
-            )
-
-        
-        with col2:
-            stop_loss = st.number_input(
-                "Stop loss",
-                min_value=0.0,
-                value=0.99500,
-                format="%.6f",
-                key="journal_stop_loss"
-            )
-
-            take_profit = st.number_input(
-                "Take profit",
-                min_value=0.0,
-                value=1.01000,
-                format="%.6f",
-                key="journal_take_profit"
-            )
-
-            risk_percent = st.number_input(
-                "Risk percentage",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.1,
-                key="journal_risk_percent"
+                value=0.0,
+                format="%.8f",
+                key="journal_exit",
             )
 
             outcome = st.selectbox(
                 "Trade outcome",
-                ["Win", "Loss", "Breakeven"],
-                key="journal_outcome"
+                options=[
+                    "Win",
+                    "Loss",
+                    "Breakeven",
+                ],
+                key="journal_outcome",
             )
 
-        notes = st.text_area(
-            "Trade notes",
-            placeholder=(
-                "Explain the setup, liquidity, structure, "
-                "entry confirmation and lessons learned."
+            notes = st.text_area(
+                "Trade notes",
+                key="journal_notes",
             )
-        )
 
         submitted = st.form_submit_button(
             "Save Paper Trade",
-            use_container_width=True
+            use_container_width=True,
         )
 
         if submitted:
 
             if entry <= 0 or exit_price <= 0:
-                st.error("Entry and exit prices must be above zero.")
 
-            elif stop_loss <= 0 or take_profit <= 0:
-                st.error("Stop loss and take profit must be above zero.")
-
-            elif risk_percent <= 0 or risk_percent > 1:
-                st.error("Risk must be above 0% and not exceed 1%.")
+                st.error(
+                    "Entry and exit prices must be greater than zero."
+                )
 
             else:
-                if direction == "Buy":
-                    valid_geometry = (
-                        stop_loss < entry < take_profit
-                    )
+
+                if direction == "BUY":
+                    price_difference = exit_price - entry
                 else:
-                    valid_geometry = (
-                        take_profit < entry < stop_loss
-                    )
+                    price_difference = entry - exit_price
 
-                if not valid_geometry:
-                    st.error(
-                        "Check your entry, stop loss and take profit "
-                        "for the selected direction."
-                    )
+                trade = {
+                    "Date": datetime.now().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                    "Symbol": symbol,
+                    "Direction": direction,
+                    "Entry": entry,
+                    "Exit": exit_price,
+                    "Price Difference": price_difference,
+                    "Outcome": outcome,
+                    "Notes": notes,
+                }
 
-                else:
-                    risk_distance = abs(entry - stop_loss)
-                    reward_distance = abs(take_profit - entry)
+                st.session_state["paper_trades"].append(
+                    trade
+                )
 
-                    rr_ratio = (
-                        reward_distance / risk_distance
-                        if risk_distance > 0 else 0
-                    )
+                st.success(
+                    "Paper trade saved successfully."
+                )
 
-                    if direction == "Buy":
-                        price_difference = exit_price - entry
-                    else:
-                        price_difference = entry - exit_price
+    # --------------------------------------------------------
+    # JOURNAL SUMMARY
+    # --------------------------------------------------------
 
-                    result = {
-                        "Date": str(trade_date),
-                        "Symbol": symbol.upper().strip(),
-                        "Direction": direction,
-                        "Entry": entry,
-                        "Exit": exit_price,
-                        "Stop Loss": stop_loss,
-                        "Take Profit": take_profit,
-                        "Risk %": risk_percent,
-                        "Planned RR": round(rr_ratio, 2),
-                        "Outcome": outcome,
-                        "Price Difference": round(
-                            price_difference, 8
-                        ),
-                        "Notes": notes,
-                    }
+    trades = st.session_state["paper_trades"]
 
-                    st.session_state.paper_trades.append(result)
+    if not trades:
+        st.info("No paper trades recorded yet.")
+        return
 
-                    st.success("Paper trade saved successfully.")
+    journal_df = pd.DataFrame(trades)
 
-    # -------------------- JOURNAL TABLE --------------------
+    total_trades = len(journal_df)
 
-    st.markdown("### Your Trade History")
+    wins = int(
+        (journal_df["Outcome"] == "Win").sum()
+    )
 
-    trades = st.session_state.paper_trades
+    losses = int(
+        (journal_df["Outcome"] == "Loss").sum()
+    )
 
-    if trades:
+    breakeven = int(
+        (journal_df["Outcome"] == "Breakeven").sum()
+    )
 
-        journal_df = pd.DataFrame(trades)
+    win_rate = (
+        wins / total_trades * 100
+    )
 
-        st.dataframe(
-            journal_df,
-            use_container_width=True,
-            hide_index=True
+    st.markdown("### Journal Statistics")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Total Trades", total_trades)
+
+    with col2:
+        st.metric("Wins", wins)
+
+    with col3:
+        st.metric("Losses", losses)
+
+    with col4:
+        st.metric(
+            "Win Rate",
+            f"{win_rate:.1f}%",
         )
 
-        col1, col2, col3 = st.columns(3)
+    st.caption(
+        f"Breakeven trades: {breakeven}"
+    )
 
-        total_trades = len(journal_df)
+    st.markdown("### Trade Records")
 
-        wins = (
-            journal_df["Outcome"] == "Win"
-        ).sum()
+    st.dataframe(
+        journal_df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
-        losses = (
-            journal_df["Outcome"] == "Loss"
-        ).sum()
+    csv_data = journal_df.to_csv(
+        index=False
+    ).encode("utf-8")
 
-        win_rate = (
-            wins / total_trades * 100
-            if total_trades else 0
-        )
+    st.download_button(
+        "Download Journal CSV",
+        data=csv_data,
+        file_name="alphax_paper_journal.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
-        col1.metric("Total Trades", total_trades)
-        col2.metric("Wins", int(wins))
-        col3.metric("Win Rate", f"{win_rate:.1f}%")
+    if st.button(
+        "Clear Paper Journal",
+        key="clear_paper_journal",
+    ):
 
-        csv_data = journal_df.to_csv(index=False).encode("utf-8")
+        st.session_state["paper_trades"] = []
 
-        st.download_button(
-            "Download Paper Journal CSV",
-            data=csv_data,
-            file_name="alphax_paper_journal.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-
-        if st.button("Clear Paper Journal"):
-            st.session_state.paper_trades = []
-            st.rerun()
-
-    else:
-        st.info("Your paper trading journal is currently empty.")
+        st.rerun()
 
 
-# -------------------- CSV ANALYSIS --------------------
+# ============================================================
+# CSV ANALYSIS
+# ============================================================
 
 def render_csv_analysis():
-    st.header("AlphaX CSV Analysis")
+
+    st.markdown(
+        '<p class="section-title">CSV Analysis</p>',
+        unsafe_allow_html=True,
+    )
 
     st.write(
-        "Upload a CSV file containing your historical paper trades "
-        "to review your performance."
+        "Upload a CSV file containing your historical "
+        "trade records for basic performance analysis."
     )
 
     uploaded_file = st.file_uploader(
-        "Upload trade history CSV",
+        "Upload trade CSV",
         type=["csv"],
-        key="alphax_csv_upload"
+        key="csv_analysis_upload",
     )
 
     if uploaded_file is None:
-        st.info("Upload a CSV file to begin.")
+
+        st.info(
+            "Upload a CSV file to begin analysis."
+        )
+
         return
 
     try:
+
         df = pd.read_csv(uploaded_file)
 
-        if df.empty:
-            st.warning("The uploaded CSV file is empty.")
-            return
+    except Exception as error:
 
-        st.success("CSV file loaded successfully.")
-
-        st.markdown("### Data Preview")
-
-        st.dataframe(
-            df.head(20),
-            use_container_width=True,
-            hide_index=True
+        st.error(
+            f"Could not read CSV file: {error}"
         )
 
-        st.markdown("### Dataset Information")
+        return
 
-        col1, col2 = st.columns(2)
+    if df.empty:
 
-        col1.metric("Total Rows", len(df))
-        col2.metric("Total Columns", len(df.columns))
+        st.warning("The uploaded CSV file is empty.")
 
-        st.write("Available columns:")
+        return
 
-        st.write(", ".join(df.columns.astype(str)))
+    st.markdown("### Uploaded Data")
 
-        # -------------------- OUTCOME ANALYSIS --------------------
-
-        if "Outcome" in df.columns:
-
-            outcome_counts = (
-                df["Outcome"]
-                .astype(str)
-                .str.strip()
-                .str.title()
-                .value_counts()
-            )
-
-            st.markdown("### Trade Outcomes")
-
-            outcome_df = outcome_counts.rename_axis(
-                "Outcome"
-            ).reset_index(name="Number of Trades")
-
-            st.dataframe(
-                outcome_df,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            wins = int(
-                outcome_counts.get("Win", 0)
-            )
-
-            losses = int(
-                outcome_counts.get("Loss", 0)
-            )
-
-            total = int(outcome_counts.sum())
-
-            win_rate = (
-                wins / total * 100
-                if total else 0
-            )
-
-            col1, col2, col3 = st.columns(3)
-
-            col1.metric("Wins", wins)
-            col2.metric("Losses", losses)
-            col3.metric("Win Rate", f"{win_rate:.1f}%")
-
-        # -------------------- NUMERIC ANALYSIS --------------------
-
-        numeric_columns = df.select_dtypes(
-            include="number"
-        ).columns.tolist()
-
-        if numeric_columns:
-
-            st.markdown("### Numerical Statistics")
-
-            st.dataframe(
-                df[numeric_columns].describe(),
-                use_container_width=True
-            )
-
-        # -------------------- DOWNLOAD CLEAN COPY --------------------
-
-        clean_csv = df.to_csv(index=False).encode("utf-8")
-
-        st.download_button(
-            "Download CSV Copy",
-            data=clean_csv,
-            file_name="alphax_analyzed_trades.csv",
-            mime="text/csv"
-        )
-
-    except Exception as e:
-        st.error(f"Unable to analyze CSV: {e}")
-
-
-# -------------------- RISK PLANNER --------------------
-
-def render_risk_planner():
-    st.header("AlphaX Risk Management Planner")
-
-    st.write(
-        "Calculate the monetary risk for a hypothetical trade."
+    st.dataframe(
+        df.head(100),
+        use_container_width=True,
     )
 
-    col1, col2 = st.columns(2)
+    st.write(
+        f"Rows: {len(df)} | Columns: {len(df.columns)}"
+    )
 
-    with col1:
-        account_balance = st.number_input(
-            "Account balance",
-            min_value=0.0,
-            value=50000.0,
-            step=1000.0,
-            key="risk_planner_account_balance"
+    # --------------------------------------------------------
+    # FIND OUTCOME COLUMN
+    # --------------------------------------------------------
+
+    outcome_column = next(
+        (
+            column
+            for column in df.columns
+            if str(column).strip().lower()
+            in [
+                "outcome",
+                "result",
+                "status",
+            ]
+        ),
+        None,
+    )
+
+    if outcome_column:
+
+        outcomes = (
+            df[outcome_column]
+            .astype(str)
+            .str.strip()
+            .str.lower()
         )
 
-        risk_percent = st.number_input(
-            "Risk percentage",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.5,
-            step=0.1,
-            key="risk_planner_risk_percent"
+        wins = int(
+            outcomes.isin(
+                ["win", "won", "profit"]
+            ).sum()
         )
 
-    with col2:
-        entry = st.number_input(
-            "Entry price",
-            min_value=0.0,
-            value=1.10000,
-            format="%.6f",
-            key="risk_planner_entry"
+        losses = int(
+            outcomes.isin(
+                ["loss", "lost"]
+            ).sum()
         )
 
-        stop_loss = st.number_input(
-            "Stop-loss price",
-            min_value=0.0,
-            value=1.09500,
-            format="%.6f",
-            key="risk_planner_stop_loss"
+        breakeven = int(
+            outcomes.isin(
+                ["breakeven", "break even", "be"]
+            ).sum()
         )
 
-    if account_balance > 0 and risk_percent > 0:
-        risk_amount = account_balance * risk_percent / 100
+        classified = wins + losses + breakeven
 
-        st.markdown("### Risk Summary")
-
-        col1, col2 = st.columns(2)
-
-        col1.metric(
-            "Maximum Planned Risk",
-            f"₦{risk_amount:,.2f}"
+        win_rate = (
+            wins / classified * 100
+            if classified > 0
+            else 0
         )
 
-        col2.metric(
-            "Risk Percentage",
-            f"{risk_percent:.2f}%"
-        )
+        st.markdown("### Outcome Analysis")
 
-        if entry > 0 and stop_loss > 0:
-            stop_distance = abs(entry - stop_loss)
+        col1, col2, col3, col4 = st.columns(4)
 
+        with col1:
+            st.metric("Wins", wins)
+
+        with col2:
+            st.metric("Losses", losses)
+
+        with col3:
+            st.metric("Breakeven", breakeven)
+
+        with col4:
             st.metric(
-                "Stop-Loss Distance",
-                f"{stop_distance:.6f}"
+                "Win Rate",
+                f"{win_rate:.1f}%",
             )
 
-        st.caption(
-            "This planner calculates monetary risk only. "
-            "It does not calculate broker-specific lot size, "
-            "pip value, contract size, spread or commission."
-        )
-
     else:
+
         st.info(
-            "Enter an account balance and valid risk percentage."
+            "No recognized Outcome, Result or Status column "
+            "was found. Add one of these columns to enable "
+            "win-rate analysis."
         )
 
+    # --------------------------------------------------------
+    # NUMERICAL SUMMARY
+    # --------------------------------------------------------
 
-# -------------------- MAIN APPLICATION --------------------
+    numeric_df = df.select_dtypes(
+        include="number"
+    )
+
+    if not numeric_df.empty:
+
+        st.markdown("### Numerical Statistics")
+
+        st.dataframe(
+            numeric_df.describe().T,
+            use_container_width=True,
+        )
+
+    # --------------------------------------------------------
+    # CLEAN CSV DOWNLOAD
+    # --------------------------------------------------------
+
+    clean_csv = df.to_csv(
+        index=False
+    ).encode("utf-8")
+
+    st.download_button(
+        "Download Clean CSV",
+        data=clean_csv,
+        file_name="alphax_clean_analysis.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
 
 def main():
 
-    st.title("ABBA ALPHAX")
-    st.caption(
-        f"AlphaX Signal Desk | Version {VERSION}"
+    st.markdown(
+        '<p class="main-title">🚀 AlphaX Signal Desk</p>',
+        unsafe_allow_html=True,
     )
 
     st.markdown(
-        """
-        **SMC + Price Action Trading Analysis**
-
-        Higher timeframe: 1H / 15M  
-        Execution timeframe: 5M  
-        Risk guideline: 0.5% preferred, 1% maximum  
-        Minimum reward-to-risk guideline: 1:2
-        """
+        '<p class="sub-title">'
+        'Abba AI • Smart Money Concepts • Price Action'
+        '</p>',
+        unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "Market Scanner",
-        "Setup Validator",
-        "Paper Journal",
-        "CSV Analysis",
-        "Risk Planner",
+    st.caption(
+        f"Version {VERSION} | Manual analysis | "
+        "Signal-only | No live trade execution"
+    )
+
+    st.markdown("---")
+
+    tabs = st.tabs([
+        "📊 Market Scanner",
+        "🎯 Setup Validator",
+        "📓 Paper Journal",
+        "📁 CSV Analysis",
+        "🛡️ Risk Planner",
     ])
 
-    with tab1:
+    with tabs[0]:
         render_market_scanner()
 
-    with tab2:
+    with tabs[1]:
         render_setup_validator()
 
-    with tab3:
+    with tabs[2]:
         render_paper_journal()
 
-    with tab4:
+    with tabs[3]:
         render_csv_analysis()
 
-    with tab5:
+    with tabs[4]:
         render_risk_planner()
 
-    # -------------------- FOOTER --------------------
+    st.markdown("---")
 
-    st.divider()
-
-    st.markdown(
-        """
-        <div style="text-align:center; padding:10px;">
-            <h4 style="color:#2196F3;">ABBA ALPHAX</h4>
-            <p>Learn • Analyse • Validate • Improve</p>
-            <p style="font-size:12px; color:gray;">
-                Educational trading analysis tool.
-                No automated trading or live order execution.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True
+    st.caption(
+        "AlphaX Signal Desk is an educational analysis tool. "
+        "It does not provide guaranteed trading signals, "
+        "financial advice or automatic trade execution. "
+        "Always confirm market conditions manually and "
+        "manage your risk."
     )
 
 
-# -------------------- APPLICATION ENTRY POINT --------------------
+# ============================================================
+# APPLICATION ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
-
-# -------------------- END OF ALPHAX SIGNAL DESK v0.9.0 --------------------
