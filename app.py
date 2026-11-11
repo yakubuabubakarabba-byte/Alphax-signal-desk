@@ -1671,28 +1671,89 @@ def render_setup_validator():
             checklist
         )
 
-        if is_valid:
-            risk_distance = abs(entry - stop_loss)
-            reward_distance = abs(take_profit - entry)
-            rr_ratio = reward_distance / risk_distance
 
-            st.success("Setup passed AlphaX validation.")
+def render_risk_planner():
+    st.header("AlphaX Risk Management Planner")
+
+    st.write(
+        "Calculate the monetary risk for a hypothetical trade."
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        account_balance = st.number_input(
+            "Account balance",
+            min_value=0.0,
+            value=50000.0,
+            step=1000.0,
+            key="planner_account_balance"
+        )
+
+        risk_percent = st.number_input(
+            "Risk percentage",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            key="planner_risk_percent"
+        )
+
+    with col2:
+        entry = st.number_input(
+            "Entry price",
+            min_value=0.0,
+            value=1.10000,
+            format="%.6f",
+            key="planner_entry"
+        )
+
+        stop_loss = st.number_input(
+            "Stop-loss price",
+            min_value=0.0,
+            value=1.09500,
+            format="%.6f",
+            key="planner_stop_loss"
+        )
+
+    if account_balance > 0 and risk_percent > 0:
+        risk_amount = (
+            account_balance * risk_percent / 100
+        )
+
+        st.markdown("### Risk Summary")
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(
+            "Maximum Planned Risk",
+            f"₦{risk_amount:,.2f}"
+        )
+
+        col2.metric(
+            "Risk Percentage",
+            f"{risk_percent:.2f}%"
+        )
+
+        if entry > 0 and stop_loss > 0:
+            stop_distance = abs(entry - stop_loss)
 
             st.metric(
-                "Reward-to-Risk",
-                f"{rr_ratio:.2f}:1"
+                "Stop-Loss Distance",
+                f"{stop_distance:.6f}"
             )
 
-            st.info(
-                "This is a validation result, not a trade instruction. "
-                "Review the chart before making any decision."
-            )
+        st.caption(
+            "This planner calculates monetary risk only. "
+            "It does not calculate broker-specific lot size, "
+            "pip value, contract size, spread or commission."
+        )
 
-        else:
-            st.error("Setup did not pass validation.")
+    else:
+        st.info(
+            "Enter an account balance and valid risk percentage."
+        )
 
-            for error in errors:
-                st.write(f"• {error}")
 
 
 
