@@ -1272,38 +1272,118 @@ def render_individual_analysis(result):
 
     # -------------------- CHART --------------------
 
-    st.markdown("### 5M Market Chart")
-
-    chart_data = result.get("chart")
-
-    if chart_data is not None:
-        show_chart(chart_data, symbol)
-    else:
-        st.info("Chart data is unavailable.")
-
-    st.caption(
-        "AlphaX scanner findings are technical-analysis estimates. "
-        "Confirm market structure, liquidity, zones and entry conditions "
-        "visually before considering a trade."
-    )
-
-
-def render_market_scanner():
+def show_chart(df, symbol):
     """
-    Main Market Scanner page.
+    Display a 5M candlestick chart with EMA20 and EMA50.
     """
 
-    st.header("AlphaX Market Scanner")
+    if df is None or df.empty:
+        st.warning("No chart data is available.")
+        return
 
-    st.write(
-        "Scan selected crypto markets using the AlphaX "
-        "SMC + Price Action framework."
+    chart_df = df.copy()
+
+    # Match the column names returned by the market scanner.
+    chart_df = chart_df.rename(columns={
+        "time": "timestamp",
+        "ema20": "ema_20",
+        "ema50": "ema_50"
+    })
+
+    required_columns = [
+        "timestamp", "open", "high", "low", "close"
+    ]
+
+    if not all(
+        column in chart_df.columns
+        for column in required_columns
+    ):
+        st.warning("Chart data is missing required columns.")
+        return
+
+    chart_df["timestamp"] = pd.to_datetime(
+        chart_df["timestamp"],
+        errors="coerce",
+        utc=True
     )
 
-    st.caption(
-        "Higher-timeframe bias: 1H / 15M | "
-        "Execution analysis: 5M | "
-        "Maximum score: 11 points"
+    chart_df = chart_df.dropna(
+        subset=["timestamp", "open", "high", "low", "close"]
+    )
+
+    if chart_df.empty:
+        st.warning("No valid candle data found.")
+        return
+
+    chart_df["direction"] = chart_df.apply(
+        lambda row: (
+            "Bullish"
+            if row["close"] >= row["open"]
+            else "Bearish"
+        ),
+        axis=1
+    )
+
+    candle = alt.Chart(chart_df).encode(
+        x=alt.X(
+            "timestamp:T",
+            title="Time",
+            axis=alt.Axis(format="%H:%M")
+        ),
+        color=alt.Color(
+            "direction:N",
+            scale=alt.Scale(
+                domain=["Bullish", "Bearish"],
+                range=["#00C853", "#FF1744"]
+            ),
+            legend=None
+        )
+    )
+
+    wicks = candle.mark_rule().encode(
+        y=alt.Y("low:Q", title="Price"),
+        y2="high:Q"
+    )
+
+    bodies = candle.mark_bar(size=7).encode(
+        y="open:Q",
+        y2="close:Q"
+    )
+
+    chart_layers = [wicks, bodies]
+
+    if "ema_20" in chart_df.columns:
+        ema20 = alt.Chart(chart_df).mark_line(
+            color="#2196F3",
+            strokeWidth=1.5
+        ).encode(
+            x="timestamp:T",
+            y=alt.Y("ema_20:Q", title="Price")
+        )
+
+        chart_layers.append(ema20)
+
+    if "ema_50" in chart_df.columns:
+        ema50 = alt.Chart(chart_df).mark_line(
+            color="#FFC107",
+            strokeWidth=1.5
+        ).encode(
+            x="timestamp:T",
+            y=alt.Y("ema_50:Q", title="Price")
+        )
+
+        chart_layers.append(ema50)
+
+    final_chart = alt.layer(
+        *chart_layers
+    ).properties(
+        title=f"{symbol} — 5M Candlestick Chart",
+        height=420
+    ).interactive()
+
+    st.altair_chart(
+        final_chart,
+        use_container_width=True
     )
 
     # -------------------- SCANNER CONTROLS --------------------
@@ -2106,38 +2186,38 @@ def render_risk_planner():
             "Account balance",
             min_value=0.0,
             value=50000.0,
-            step=1000.0
+            step=1000.0,
+            key="risk_planner_account_balance"
         )
 
-       risk_percent = st.number_input(
-    "Risk percentage",
-    min_value=0.0,
-    max_value=1.0,
-    value=0.5,
-    step=0.1,
-    key="risk_planner_risk_percent"
-) 
+        risk_percent = st.number_input(
+            "Risk percentage",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            key="risk_planner_risk_percent"
+        )
 
     with col2:
         entry = st.number_input(
             "Entry price",
             min_value=0.0,
             value=1.10000,
-            format="%.6f"
+            format="%.6f",
+            key="risk_planner_entry"
         )
 
         stop_loss = st.number_input(
             "Stop-loss price",
             min_value=0.0,
             value=1.09500,
-            format="%.6f"
+            format="%.6f",
+            key="risk_planner_stop_loss"
         )
 
     if account_balance > 0 and risk_percent > 0:
-
-        risk_amount = (
-            account_balance * risk_percent / 100
-        )
+        risk_amount = account_balance * risk_percent / 100
 
         st.markdown("### Risk Summary")
 
@@ -2154,7 +2234,6 @@ def render_risk_planner():
         )
 
         if entry > 0 and stop_loss > 0:
-
             stop_distance = abs(entry - stop_loss)
 
             st.metric(
@@ -2162,14 +2241,16 @@ def render_risk_planner():
                 f"{stop_distance:.6f}"
             )
 
-            st.caption(
-                "This planner calculates monetary risk only. "
-                "It does not calculate broker-specific lot size, "
-                "pip value, contract size, spread or commission."
-            )
+        st.caption(
+            "This planner calculates monetary risk only. "
+            "It does not calculate broker-specific lot size, "
+            "pip value, contract size, spread or commission."
+        )
 
     else:
-        st.info("Enter an account balance and valid risk percentage.")
+        st.info(
+            "Enter an account balance and valid risk percentage."
+        )
 
 
 # -------------------- MAIN APPLICATION --------------------
