@@ -1271,6 +1271,10 @@ def render_individual_analysis(result):
         st.info("No scanner reasons were returned.")
 
     # -------------------- CHART --------------------
+    chart_data = result.get("chart")
+
+    if chart_data is not None:
+        show_chart(chart_data, symbol)
 
 def show_chart(df, symbol):
     """
