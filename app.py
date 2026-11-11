@@ -2033,13 +2033,14 @@ def render_risk_planner():
             step=1000.0
         )
 
-        risk_percent = st.number_input(
-            "Risk percentage",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.5,
-            step=0.1
-        )
+       risk_percent = st.number_input(
+    "Risk percentage",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.5,
+    step=0.1,
+    key="risk_planner_risk_percent"
+) 
 
     with col2:
         entry = st.number_input(
