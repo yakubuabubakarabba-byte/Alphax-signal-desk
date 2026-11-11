@@ -1385,7 +1385,7 @@ def show_chart(df, symbol):
         final_chart,
         use_container_width=True
     )
-
+def render_market_scanner():
     # -------------------- SCANNER CONTROLS --------------------
 
     col1, col2 = st.columns([2, 1])
