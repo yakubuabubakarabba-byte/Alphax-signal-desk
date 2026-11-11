@@ -6,12 +6,10 @@ import pandas as pd
 import requests
 import streamlit as st
 
-
-# ============================================================
-# ALPHAX SIGNAL DESK — VERSION 0.9.0
+# ALPHAX SIGNAL DESK — VERSION 1.0.0
 # ============================================================
 
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 
 BINANCE_API = "https://data-api.binance.vision/api/v3/klines"
 
