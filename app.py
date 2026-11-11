@@ -2927,3 +2927,9 @@ def render_individual_analysis(result):
         "a guaranteed entry or an instruction to execute a trade."
     )
 
+# ============================================================
+# ALPHAX APPLICATION ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    main()
